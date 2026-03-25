@@ -18,7 +18,7 @@ This document describes the **static model railway layout** consumed by the `yoy
 | Concept | Range | Notes |
 |--------|-------|--------|
 | Track id | 1–12 | Unique across `[[tracks]]`. |
-| Sensor id | 1–24 | **Globally unique**: each sensor appears in **exactly one** track’s `sensors_fwd` list. |
+| Sensor id | 1–24 | **Globally unique**: each sensor appears in **exactly one** `along_fwd` entry in **one** track. |
 | Point id | 1–13 | Unique across the `points` list (one row per logical point). |
 
 ---
@@ -27,8 +27,41 @@ This document describes the **static model railway layout** consumed by the `yoy
 
 Each **track** is a powered segment with a fixed intrinsic **FWD** and **BWD** direction (your physical convention).
 
-- **`sensors_fwd`** — Sensor ids in order along the segment. **Order matters:** it defines sequence along the segment (used for simulation and routing). Convention in code: list sensors in the **FWD** travel direction (first → last along FWD). If your mental model differs, document it here when you fill real data.
-- **`point_ids`** — Point ids that sit on this segment (cross-reference; full geometry is under `points`).
+- **`along_fwd`** — Ordered list of **sensors and points** along the segment in the **FWD** direction (from the **BWD** end toward the **FWD** end). List every `sensor` and `point` that sits on this segment in travel order. A point may sit **between** two sensors, **before** the first sensor (toward the BWD end), or **after** the last sensor (toward the FWD end)—there is no requirement that sensors come first or last.
+
+Between two sensors:
+
+```toml
+along_fwd = [
+  { kind = "sensor", id = 4 },
+  { kind = "point", id = 1 },
+  { kind = "point", id = 2 },
+  { kind = "sensor", id = 5 },
+]
+```
+
+Point before any sensor (toward BWD):
+
+```toml
+along_fwd = [
+  { kind = "point", id = 1 },
+  { kind = "sensor", id = 4 },
+  { kind = "sensor", id = 5 },
+]
+```
+
+Point after the last sensor (toward FWD):
+
+```toml
+along_fwd = [
+  { kind = "sensor", id = 4 },
+  { kind = "sensor", id = 5 },
+  { kind = "point", id = 1 },
+]
+```
+
+A segment may list **only** sensors, **only** points, or any mix. The same point id must not appear twice on the same track’s `along_fwd`; it may appear on **another** track if your junction model needs it.
+
 - **`fwd_end` / `bwd_end`** — Either a **buffer** (end of line) or an **interconnect** to another track’s end.
 - **`reverses_direction`** — Exactly **one** track in the layout must have this set to `true`: the **direction reverser** (train enters one way and leaves on another track with opposite sense). Validation enforces a count of **1**.
 
@@ -68,7 +101,7 @@ Use `point_leg` when the graph needs to chain through multiple points. Reference
 
 ## Stations
 
-Each **station** has a display **`name`** and a list of **`sensor_ids`**. A station that spans multiple tracks lists **all** sensors that belong to it; every id must appear on **some** track’s `sensors_fwd`.
+Each **station** has a display **`name`** and a list of **`sensor_ids`**. A station that spans multiple tracks lists **all** sensors that belong to it; every id must appear on **some** track’s `along_fwd` as a `sensor` entry.
 
 ---
 
@@ -79,10 +112,10 @@ The crate runs these checks (see `TrackLayout::validate`):
 - `version == 1`
 - At least one track
 - Track ids unique and in range
-- Sensor ids in range, globally unique
-- `point_ids` on each track reference defined points
+- Sensor ids in range, globally unique across all `along_fwd`
+- Point ids in `along_fwd` in range, not duplicated on the same track, and each references a defined `[[points]]` row
 - Exactly one `reverses_direction == true`
-- Point ids unique and in range; connection refs valid
+- Point ids unique and in range in `points`; connection refs valid
 - Interconnect reciprocity
 - Station sensors exist on some track
 
@@ -93,7 +126,8 @@ The crate runs these checks (see `TrackLayout::validate`):
 When you start building routers (see `ROADMAP.md`):
 
 - [ ] Every real track 1–12 you use is present (or explicitly omitted only if unused).
-- [ ] Every sensor 1–24 you use appears exactly once in some `sensors_fwd`.
+- [ ] Every sensor 1–24 you use appears exactly once in some `along_fwd` as a `sensor`.
+- [ ] `along_fwd` order matches physical order along FWD for sensors and points.
 - [ ] All interconnects are reciprocal.
 - [ ] The single reverser track matches the physical reversing loop.
 - [ ] All points are `independent` or `coupled` as per hardware.
@@ -105,6 +139,7 @@ When you start building routers (see `ROADMAP.md`):
 
 - Load: `TrackLayout::from_toml_str`, `TrackLayout::from_path`
 - Validate: `TrackLayout::validate() -> Result<(), LayoutError>`
-- Types: `yoyo::layout::{TrackLayout, TrackSegment, TrackEnd, PointDef, Station, ConnectionRef, …}`
+- Types: `yoyo::layout::{TrackLayout, TrackSegment, TrackElement, TrackEnd, PointDef, Station, ConnectionRef, …}`
+- Helpers: `TrackSegment::sensors_along_fwd()`, `TrackSegment::points_along_fwd()` — iterators over ids in order along FWD.
 
 Future work (not in this framework): build a **navigation graph** or pathfinder on top of this model for autonomous routing.

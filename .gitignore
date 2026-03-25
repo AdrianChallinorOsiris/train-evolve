@@ -4,3 +4,6 @@ Cargo.lock
 ISSUES_TODAY.md
 ISSUE_RESPONSE.md
 /tmp/
+data/runtime/trains.json
+data/runtime/program.json
+data/runtime/automatic_start.json

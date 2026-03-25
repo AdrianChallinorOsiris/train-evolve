@@ -1,24 +1,38 @@
 //! yoyo — a coding agent that evolves itself.
 //!
-//! Started as ~200 lines. Grows one commit at a time.
-//! Read IDENTITY.md, JOURNAL.md, and ROADMAP.md for the full story.
+//! ## Usage
 //!
-//! Usage:
-//!   ANTHROPIC_API_KEY=sk-... cargo run
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --model claude-opus-4-6
-//!   ANTHROPIC_API_KEY=sk-... cargo run -- --skills ./skills
+//! **HTTP service** (REST control; no cron required):
 //!
-//! Commands:
-//!   /quit, /exit    Exit the agent
-//!   /clear          Clear conversation history
-//!   /model <name>   Switch model mid-session
+//! ```text
+//! ANTHROPIC_API_KEY=sk-... cargo run -- --serve
+//! ANTHROPIC_API_KEY=sk-... cargo run -- --serve --bind 0.0.0.0:8080
+//! ```
+//!
+//! **Interactive REPL**:
+//!
+//! ```text
+//! ANTHROPIC_API_KEY=sk-... cargo run -- --repl
+//! ANTHROPIC_API_KEY=sk-... cargo run -- --repl --model claude-opus-4-6 --skills ./skills
+//! ```
+//!
+//! REPL commands: `/quit`, `/exit`, `/clear`, `/model <name>`
 
 use std::io::{self, BufRead, Write};
+use std::net::SocketAddr;
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 use yoagent::agent::Agent;
 use yoagent::provider::AnthropicProvider;
 use yoagent::skills::SkillSet;
 use yoagent::tools::default_tools;
 use yoagent::*;
+
+use yoyo::automation::AutomationController;
+use yoyo::evolve_session::EvolutionConfig;
+use yoyo::prompts::SYSTEM_PROMPT;
+use yoyo::service::{serve, AppState};
 
 // ANSI color helpers
 const RESET: &str = "\x1b[0m";
@@ -28,12 +42,6 @@ const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
 const CYAN: &str = "\x1b[36m";
 const RED: &str = "\x1b[31m";
-
-const SYSTEM_PROMPT: &str = r#"You are a coding assistant working in the user's terminal.
-You have access to the filesystem and shell. Be direct and concise.
-When the user asks you to do something, do it — don't just explain how.
-Use tools proactively: read files to understand context, run commands to verify your work.
-After making changes, run tests or verify the result when appropriate."#;
 
 fn print_banner() {
     println!("\n{BOLD}{CYAN}  yoyo{RESET} {DIM}— a coding agent growing up in public{RESET}");
@@ -49,13 +57,66 @@ fn print_usage(usage: &Usage) {
     }
 }
 
-#[tokio::main]
-async fn main() {
+fn evolution_config_from_env() -> EvolutionConfig {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .or_else(|_| std::env::var("API_KEY"))
         .expect("Set ANTHROPIC_API_KEY or API_KEY");
+    let model = std::env::var("MODEL").unwrap_or_else(|_| "claude-opus-4-6".into());
+    let skill_dirs = std::env::var("YOYO_SKILLS")
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
+        .unwrap_or_else(|_| vec!["./skills".to_string()]);
+    EvolutionConfig {
+        api_key,
+        model,
+        skill_dirs,
+    }
+}
 
+fn parse_bind(args: &[String]) -> SocketAddr {
+    if let Some(i) = args.iter().position(|a| a == "--bind") {
+        if let Some(addr) = args.get(i + 1) {
+            return addr.parse().unwrap_or_else(|_| {
+                panic!("invalid --bind {addr} (use host:port, e.g. 0.0.0.0:8080)")
+            });
+        }
+    }
+    let port: u16 = args
+        .iter()
+        .position(|a| a == "--port")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(8080);
+    SocketAddr::from(([0, 0, 0, 0], port))
+}
+
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    if args.iter().any(|a| a == "--serve") {
+        let bind = parse_bind(&args);
+        let state = AppState {
+            evolve_lock: Arc::new(Mutex::new(())),
+            evolution: evolution_config_from_env(),
+            automation: Arc::new(AutomationController::new()),
+        };
+        eprintln!("yoyo: HTTP service on http://{bind}");
+        eprintln!("yoyo: POST /evolve /initialise /program /automatic /stop  GET /health");
+        if let Err(e) = serve(bind, state).await {
+            eprintln!("yoyo: server error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    let api_key = std::env::var("ANTHROPIC_API_KEY")
+        .or_else(|_| std::env::var("API_KEY"))
+        .expect("Set ANTHROPIC_API_KEY or API_KEY");
 
     let model = args
         .iter()

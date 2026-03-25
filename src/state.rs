@@ -1,0 +1,104 @@
+//! Runtime train state (INITIALISE) and program placeholder (PROGRAM).
+
+use std::fs;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+use thiserror::Error;
+
+pub const MAX_TRAINS: usize = 6;
+
+/// Default path for INITIALISE payload (gitignored).
+pub fn trains_path() -> std::path::PathBuf {
+    Path::new("data/runtime/trains.json").to_path_buf()
+}
+
+/// Default path for PROGRAM placeholder payload (gitignored).
+pub fn program_path() -> std::path::PathBuf {
+    Path::new("data/runtime/program.json").to_path_buf()
+}
+
+/// Snapshot of INITIALISE taken when `/automatic` starts (used by `/stop` to restore).
+pub fn automatic_start_path() -> std::path::PathBuf {
+    Path::new("data/runtime/automatic_start.json").to_path_buf()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InitialiseRequest {
+    pub trains: Vec<TrainPosition>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrainPosition {
+    /// Which sensor currently detects this train (1–24).
+    pub sensor: u8,
+}
+
+#[derive(Debug, Error)]
+pub enum StateError {
+    #[error("at most {MAX_TRAINS} trains allowed, got {0}")]
+    TooManyTrains(usize),
+    #[error("invalid sensor id {0}: must be 1..=24")]
+    InvalidSensor(u8),
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+impl InitialiseRequest {
+    pub fn validate(&self) -> Result<(), StateError> {
+        if self.trains.len() > MAX_TRAINS {
+            return Err(StateError::TooManyTrains(self.trains.len()));
+        }
+        for t in &self.trains {
+            if !(1..=24).contains(&t.sensor) {
+                return Err(StateError::InvalidSensor(t.sensor));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn save(&self, path: &Path) -> Result<(), StateError> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_string_pretty(self)?;
+        fs::write(path, json)?;
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> Result<Option<Self>, StateError> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let s = fs::read_to_string(path)?;
+        Ok(Some(serde_json::from_str(&s)?))
+    }
+}
+
+/// PROGRAM endpoint stores the raw JSON until the track program format exists.
+pub fn save_program_placeholder(value: &serde_json::Value) -> Result<(), StateError> {
+    let path = program_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string_pretty(value)?;
+    fs::write(path, json)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_max_trains() {
+        let mut trains = vec![];
+        for _ in 0..7 {
+            trains.push(TrainPosition { sensor: 1 });
+        }
+        let req = InitialiseRequest { trains };
+        assert!(req.validate().is_err());
+    }
+}

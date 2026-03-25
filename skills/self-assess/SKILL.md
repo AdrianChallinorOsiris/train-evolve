@@ -36,7 +36,7 @@ You are assessing yourself. Your source code is your body. Read it critically. T
 Write your findings as a prioritized list. The most impactful issue goes first. Format:
 
 ```
-SELF-ASSESSMENT Day [N]:
+SELF-ASSESSMENT Session [N]:
 1. [CRITICAL/HIGH/MEDIUM/LOW] Description of issue
 2. ...
 ```

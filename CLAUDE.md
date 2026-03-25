@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A self-evolving coding agent CLI built on [yoagent]. The agent implementation lives under `src/` (currently centered on `src/main.rs`). A daily GitHub Actions cron job (`scripts/evolve.sh`) runs the agent, which reads its own source, picks one improvement, implements it, and commits — if tests pass.
+A self-evolving coding agent built on [yoagent]. The implementation lives under `src/` (binary `main.rs`, library `lib.rs`). **Primary operation:** a long-lived **HTTP service** (`cargo run -- --serve`) with `POST /evolve` whenever you want an evolution iteration — no calendar or Git workflow required. Optionally **`scripts/evolve.sh`** can fetch GitHub issues and run a similar session (for maintainers who still use that path).
 
 ## Build & Test Commands
 
@@ -18,13 +18,18 @@ cargo fmt                # Auto-format
 
 CI runs all four checks (build, test, clippy with -D warnings, fmt check) on push/PR to main.
 
-To run the agent interactively:
+To run the agent interactively (REPL):
 ```bash
 ANTHROPIC_API_KEY=sk-... cargo run
 ANTHROPIC_API_KEY=sk-... cargo run -- --model claude-opus-4-6 --skills ./skills
 ```
 
-To trigger a full evolution cycle:
+HTTP service (`GET /health`, `POST /evolve`, `POST /initialise`, `POST /program`, `POST /automatic`, `POST /stop`):
+```bash
+ANTHROPIC_API_KEY=sk-... cargo run -- --serve
+```
+
+Shell evolution cycle (issues + push):
 ```bash
 ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 ```
@@ -33,7 +38,7 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 
 **Agent crate**: The binary is built from `src/` — a REPL that uses `yoagent::Agent` with `AnthropicProvider`, `default_tools()`, and an optional `SkillSet`. It handles streaming `AgentEvent`s (tool execution, text deltas, agent end) and renders them with ANSI colors. The library (`src/lib.rs`) exposes **`yoyo::layout`**: static track topology from `data/track_layout.toml` (see `docs/TRACK_LAYOUT.md`).
 
-**Evolution loop** (`scripts/evolve.sh`): Verifies build → fetches GitHub issues (via `gh` CLI + `scripts/format_issues.py`) → pipes a structured prompt into the agent → verifies build after changes → commits or reverts → posts issue responses → pushes.
+**Evolution** (HTTP `POST /evolve` or REPL): Pre-flight build → agent session with skills → verify build/tests → increment session counter (`DAY_COUNT`) → optional git wrap-up. **Optional shell script** (`scripts/evolve.sh`): Verifies build → fetches GitHub issues (via `gh` + `scripts/format_issues.py`) → runs the agent → verifies → commits/reverts → issue responses → push.
 
 **Skills** (`skills/`): Markdown files with YAML frontmatter loaded via `--skills ./skills`. These skills define the agent's workflow:
 - `self-assess` — read own code, try tasks, find bugs/gaps
@@ -43,10 +48,10 @@ ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 
 **State files** (read/written by the agent during evolution):
 - `IDENTITY.md` — the agent's constitution and rules (DO NOT MODIFY)
-- `JOURNAL.md` — chronological log of daily sessions (append at top, never delete)
+- `JOURNAL.md` — chronological log of evolution sessions (append at top, never delete)
 - `ROADMAP.md` — leveled curriculum of planned improvements
 - `LEARNINGS.md` — cached knowledge from internet lookups
-- `DAY_COUNT` — integer tracking current evolution day
+- `DAY_COUNT` — integer session counter (increments each evolution run; filename is legacy, not calendar-based)
 - `ISSUES_TODAY.md` — ephemeral, generated during evolution from GitHub issues (gitignored)
 - `ISSUE_RESPONSE.md` — ephemeral, agent writes this to respond to issues (gitignored)
 
