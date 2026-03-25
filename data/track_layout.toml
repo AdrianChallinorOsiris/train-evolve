@@ -1,0 +1,12 @@
+# Canonical static layout for the model railway (edit to match your hardware).
+# See docs/TRACK_LAYOUT.md for field meanings and invariants.
+
+version = 1
+
+[[tracks]]
+id = 1
+sensors_fwd = []
+point_ids = []
+reverses_direction = true
+fwd_end = { kind = "buffer" }
+bwd_end = { kind = "buffer" }

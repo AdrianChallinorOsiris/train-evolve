@@ -1,0 +1,17 @@
+[package]
+name = "yoyo"
+version = "0.1.0"
+edition = "2021"
+description = "A coding agent that evolves itself. Born as 200 lines of Rust, growing up in public."
+license = "MIT"
+repository = "https://github.com/yologdev/yoyo-evolve"
+
+[dependencies]
+yoagent = "0.5"
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
