@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 
 use crate::layout::ids::{PointId, SensorId, TrackId};
-use crate::layout::model::{ConnectionRef, PointDef, TrackEnd, TrackLayout, TrackSide};
+use crate::layout::model::{
+    ConnectionRef, PointDef, TrackElement, TrackEnd, TrackLayout, TrackSide,
+};
 
 /// Layout validation error.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -20,8 +22,10 @@ pub enum LayoutError {
     DuplicateSensorId(u8),
     #[error("invalid sensor id {0}: must be {}..={}", SensorId::MIN, SensorId::MAX)]
     InvalidSensorId(u8),
-    #[error("track {track} references unknown point id {point} in point_ids")]
+    #[error("track {track} references unknown point id {point} in along_fwd")]
     UnknownPointOnTrack { track: u8, point: u8 },
+    #[error("track {track} lists point id {point} more than once in along_fwd")]
+    DuplicatePointOnTrack { track: u8, point: u8 },
     #[error("expected exactly one track with reverses_direction = true, found {0}")]
     ReverserCount(usize),
     #[error("duplicate point id: {0}")]
@@ -68,19 +72,30 @@ impl TrackLayout {
 
         let mut sensors_seen = HashSet::new();
         for t in &self.tracks {
-            for &s in &t.sensors_fwd {
-                SensorId::try_new(s).ok_or(LayoutError::InvalidSensorId(s))?;
-                if !sensors_seen.insert(s) {
-                    return Err(LayoutError::DuplicateSensorId(s));
-                }
-            }
-            for &p in &t.point_ids {
-                PointId::try_new(p).ok_or(LayoutError::InvalidPointId(p))?;
-                if !self.points.iter().any(|pd| pd.id() == p) {
-                    return Err(LayoutError::UnknownPointOnTrack {
-                        track: t.id,
-                        point: p,
-                    });
+            let mut points_on_track = HashSet::new();
+            for el in &t.along_fwd {
+                match *el {
+                    TrackElement::Sensor { id: s } => {
+                        SensorId::try_new(s).ok_or(LayoutError::InvalidSensorId(s))?;
+                        if !sensors_seen.insert(s) {
+                            return Err(LayoutError::DuplicateSensorId(s));
+                        }
+                    }
+                    TrackElement::Point { id: p } => {
+                        PointId::try_new(p).ok_or(LayoutError::InvalidPointId(p))?;
+                        if !points_on_track.insert(p) {
+                            return Err(LayoutError::DuplicatePointOnTrack {
+                                track: t.id,
+                                point: p,
+                            });
+                        }
+                        if !self.points.iter().any(|pd| pd.id() == p) {
+                            return Err(LayoutError::UnknownPointOnTrack {
+                                track: t.id,
+                                point: p,
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -225,7 +240,7 @@ fn validate_connection_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::model::{Station, TrackSegment};
+    use crate::layout::model::{Station, TrackElement, TrackSegment};
 
     const STUB: &str = include_str!("../../data/track_layout.toml");
 
@@ -239,8 +254,8 @@ mod tests {
     fn duplicate_sensor_fails() {
         let mut layout = TrackLayout::from_toml_str(STUB).unwrap();
         if let Some(t) = layout.tracks.first_mut() {
-            t.sensors_fwd.push(1);
-            t.sensors_fwd.push(1);
+            t.along_fwd.push(TrackElement::Sensor { id: 1 });
+            t.along_fwd.push(TrackElement::Sensor { id: 1 });
         }
         assert_eq!(layout.validate(), Err(LayoutError::DuplicateSensorId(1)));
     }
@@ -259,8 +274,7 @@ mod tests {
         let mut layout = TrackLayout::from_toml_str(STUB).unwrap();
         layout.tracks.push(TrackSegment {
             id: 99,
-            sensors_fwd: vec![],
-            point_ids: vec![],
+            along_fwd: vec![],
             fwd_end: TrackEnd::Buffer,
             bwd_end: TrackEnd::Buffer,
             reverses_direction: false,
@@ -275,16 +289,14 @@ version = 1
 
 [[tracks]]
 id = 1
-sensors_fwd = []
-point_ids = []
+along_fwd = []
 reverses_direction = true
 fwd_end = { kind = "interconnect", peer_track = 2, peer_side = "bwd" }
 bwd_end = { kind = "buffer" }
 
 [[tracks]]
 id = 2
-sensors_fwd = []
-point_ids = []
+along_fwd = []
 reverses_direction = false
 fwd_end = { kind = "buffer" }
 bwd_end = { kind = "interconnect", peer_track = 1, peer_side = "fwd" }
@@ -300,16 +312,14 @@ version = 1
 
 [[tracks]]
 id = 1
-sensors_fwd = []
-point_ids = []
+along_fwd = []
 reverses_direction = true
 fwd_end = { kind = "interconnect", peer_track = 2, peer_side = "bwd" }
 bwd_end = { kind = "buffer" }
 
 [[tracks]]
 id = 2
-sensors_fwd = []
-point_ids = []
+along_fwd = []
 reverses_direction = false
 fwd_end = { kind = "buffer" }
 bwd_end = { kind = "buffer" }
@@ -322,12 +332,24 @@ bwd_end = { kind = "buffer" }
     }
 
     #[test]
+    fn duplicate_point_on_same_track_fails() {
+        let mut layout = TrackLayout::from_toml_str(STUB).unwrap();
+        if let Some(t) = layout.tracks.iter_mut().find(|x| x.id == 2) {
+            t.along_fwd.push(TrackElement::Point { id: 1 });
+        }
+        assert_eq!(
+            layout.validate(),
+            Err(LayoutError::DuplicatePointOnTrack { track: 2, point: 1 })
+        );
+    }
+
+    #[test]
     fn unknown_station_sensor_fails() {
         let mut layout = TrackLayout::from_toml_str(STUB).unwrap();
         layout.stations.push(Station {
             name: "Ghost".into(),
-            // Valid id range but no track lists this sensor in sensors_fwd.
-            sensor_ids: vec![5],
+            // Valid id range but no track lists this sensor in along_fwd.
+            sensor_ids: vec![10],
         });
         assert!(matches!(
             layout.validate(),

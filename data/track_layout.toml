@@ -5,8 +5,33 @@ version = 1
 
 [[tracks]]
 id = 1
-sensors_fwd = []
-point_ids = []
+along_fwd = [
+  { kind = "sensor", id = 1 },
+  { kind = "sensor", id = 2 },
+  { kind = "sensor", id = 3 },
+]
 reverses_direction = true
-fwd_end = { kind = "buffer" }
-bwd_end = { kind = "buffer" }
+fwd_end = { kind = "interconnect", peer_track = 2, peer_side = "bwd" }
+bwd_end = { kind = "interconnect", peer_track = 2, peer_side = "fwd" }
+
+[[tracks]]
+id = 2
+# along_fwd: FWD order (BWD end → FWD end). Points may be before the first sensor,
+# between sensors, or after the last sensor — see docs/TRACK_LAYOUT.md.
+# Example: point 1 between sensors 4 and 5.
+along_fwd = [
+  { kind = "sensor", id = 4 },
+  { kind = "point", id = 1 },
+  { kind = "sensor", id = 5 },
+]
+reverses_direction = false
+fwd_end = { kind = "interconnect", peer_track = 1, peer_side = "bwd" }
+bwd_end = { kind = "interconnect", peer_track = 1, peer_side = "fwd" }
+
+# Placeholder geometry for point 1 — replace legs with real topology when you refine the layout.
+[[points]]
+coupling = "independent"
+id = 1
+entry = { type = "track_port", track = 2, side = "bwd" }
+thru = { type = "track_port", track = 2, side = "fwd" }
+branch = { type = "track_port", track = 1, side = "bwd" }

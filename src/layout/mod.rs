@@ -11,6 +11,7 @@ mod validate;
 pub use ids::{PointId, SensorId, TrackId};
 pub use load::LoadError;
 pub use model::{
-    ConnectionRef, PointDef, PointLegRole, Station, TrackEnd, TrackLayout, TrackSegment, TrackSide,
+    ConnectionRef, PointDef, PointLegRole, Station, TrackElement, TrackEnd, TrackLayout,
+    TrackSegment, TrackSide,
 };
 pub use validate::LayoutError;

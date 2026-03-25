@@ -21,19 +21,46 @@ pub enum TrackEnd {
     },
 }
 
-/// One segment of track with intrinsic FWD/BWD and ordered sensors along FWD travel.
+/// One element along a track in the **FWD** direction (from BWD end toward FWD end).
+///
+/// Points may appear between sensors, **before** the first sensor, or **after** the last sensor—
+/// any order is allowed as long as it matches physical order along the segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TrackElement {
+    Sensor { id: u8 },
+    Point { id: u8 },
+}
+
+/// One segment of track with intrinsic FWD/BWD and an ordered sequence of sensors/points along FWD.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackSegment {
     pub id: u8,
-    /// Sensor ids in order along the FWD direction (first = toward BWD end, last = toward FWD end),
-    /// or the reverse depending on convention — see `docs/TRACK_LAYOUT.md`.
-    pub sensors_fwd: Vec<u8>,
-    /// Point ids that sit on this segment (reference only; geometry lives under `points`).
-    pub point_ids: Vec<u8>,
+    /// Ordered sequence along **FWD** travel (BWD end → FWD end). Mix `sensor` and `point` in
+    /// order; points may be before the first sensor, between sensors, or after the last sensor.
+    pub along_fwd: Vec<TrackElement>,
     pub fwd_end: TrackEnd,
     pub bwd_end: TrackEnd,
     /// When true, this segment reverses travel direction (FWD in → BWD out to another track).
     pub reverses_direction: bool,
+}
+
+impl TrackSegment {
+    /// Sensor ids on this segment in FWD order (subset of `along_fwd`).
+    pub fn sensors_along_fwd(&self) -> impl Iterator<Item = u8> + '_ {
+        self.along_fwd.iter().filter_map(|e| match e {
+            TrackElement::Sensor { id } => Some(*id),
+            TrackElement::Point { .. } => None,
+        })
+    }
+
+    /// Point ids on this segment in FWD order (subset of `along_fwd`).
+    pub fn points_along_fwd(&self) -> impl Iterator<Item = u8> + '_ {
+        self.along_fwd.iter().filter_map(|e| match e {
+            TrackElement::Point { id } => Some(*id),
+            TrackElement::Sensor { .. } => None,
+        })
+    }
 }
 
 /// Role of a leg when connecting to another point.
