@@ -1,10 +1,10 @@
 [package]
 name = "yoyo"
-version = "0 1 1"
+version = "0 1 2"
 edition = "2021"
-description = "A coding agent that evolves itself. Born as 200 lines of Rust, growing up in public."
+description = "A coding agent that evolves itself. Born as 600 lines of Rust, growing up in public."
 license = "MIT"
-repository = "https://github.com/yologdev/yoyo-evolve"
+repository = "https://github.com/AdrianChallinorOsiris/train-evolve"
 
 [dependencies]
 axum = "0.7"

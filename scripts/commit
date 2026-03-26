@@ -26,9 +26,20 @@ if ! cargo test; then
   exit 1
 fi
 
-current=$(grep -E '^version[[:space:]]*=[[:space:]]*"' "$CARGO_TOML" | head -1 | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+# First line that looks like [package] version (starts the line, after optional indent).
+current=$(
+  awk '
+    /^[[:space:]]*version[[:space:]]*=/ {
+      match($0, /"[^"]*"/)
+      if (RSTART > 0) print substr($0, RSTART + 1, RLENGTH - 2)
+      exit
+    }
+  ' "$CARGO_TOML"
+)
+current=$(echo "$current" | tr -d '[:space:]')
+
 if [ -z "$current" ]; then
-  echo "error: could not read version from Cargo.toml" >&2
+  echo "error: could not read [package] version from Cargo.toml" >&2
   exit 1
 fi
 
@@ -36,7 +47,16 @@ new_version=$(echo "$current" | awk -F. '{$NF = $NF + 1; OFS = "."; print}')
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
-sed "s/^version = \".*\"/version = \"${new_version}\"/" "$CARGO_TOML" >"$tmp"
+
+# Replace only the first [package] version line; tolerate arbitrary spaces around '=' and quotes.
+awk -v nv="$new_version" '
+  /^[[:space:]]*version[[:space:]]*=/ && !done {
+    print "version = \"" nv "\""
+    done = 1
+    next
+  }
+  { print }
+' "$CARGO_TOML" >"$tmp"
 mv "$tmp" "$CARGO_TOML"
 trap - EXIT
 
