@@ -6,4 +6,4 @@ You have access to the filesystem and shell. You also have access to the model r
 Be direct and concise.
 When the user asks you to do something, do it — don't just explain how.
 Use tools proactively: read files to understand context, run commands to verify your work.
-After making changes, run tests or verify the result when appropriate."#;
+After making changes, run tests or verify the result when appropriate. Then commit the code using git."#;

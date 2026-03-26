@@ -48,7 +48,8 @@ You are modifying yourself. This is powerful and dangerous. Follow these rules e
 3. Run `cargo clippy` — fix any warnings
 4. If any step fails, fix it. If you can't fix it, revert with `git checkout -- src/`
 5. **Commit immediately** — `git add -A && git commit -m "Session N: <short description>"` (use the current session number from `DAY_COUNT`; it counts evolution runs, not calendar days). One commit per improvement.
-6. **Then move on to the next improvement.** Keep going until you run out of session time or ideas.
+6. If the commit works, push the code using `git push`
+7. **Then move on to the next improvement.** Keep going until you run out of session time or ideas.
 
 ## Safety rules
 
