@@ -31,6 +31,7 @@ use yoagent::*;
 
 use yoyo::automation::AutomationController;
 use yoyo::evolve_session::EvolutionConfig;
+use yoyo::pi_client::PiClient;
 use yoyo::prompts::SYSTEM_PROMPT;
 use yoyo::service::{serve, AppState};
 
@@ -72,6 +73,7 @@ ENVIRONMENT:
   ANTHROPIC_API_KEY    API key (required; also accepts API_KEY)
   MODEL                Default model for --serve mode
   YOYO_SKILLS          Comma-separated skill dirs for --serve mode
+  PI_URL               Pi base URL (default: http://192.168.1.80:5000)
 
 REPL COMMANDS:
   /quit, /exit         Exit the REPL
@@ -84,7 +86,10 @@ SERVICE ENDPOINTS:
   POST /initialise     Set train positions
   POST /program        Upload track program
   POST /automatic      Start automatic mode
-  POST /stop           Stop automatic mode"#,
+  POST /stop           Stop automatic mode
+  GET  /pi/status      Live track/point/sensor status from Pi
+  GET  /pi/health      Pi hardware health
+  GET  /pi/sensors     All sensor values"#,
         VERSION = VERSION,
     );
 }
@@ -166,13 +171,16 @@ async fn main() {
                 std::process::exit(1);
             }
         };
+        let pi_url = std::env::var("PI_URL")
+            .unwrap_or_else(|_| yoyo::pi_client::DEFAULT_PI_URL.to_string());
         let state = AppState {
             evolve_lock: Arc::new(Mutex::new(())),
             evolution,
             automation: Arc::new(AutomationController::new()),
+            pi: Arc::new(PiClient::new(&pi_url)),
         };
         eprintln!("yoyo: HTTP service on http://{bind}");
-        eprintln!("yoyo: POST /evolve /initialise /program /automatic /stop  GET /health");
+        eprintln!("yoyo: POST /evolve /initialise /program /automatic /stop  GET /health /pi/status /pi/health /pi/sensors");
         if let Err(e) = serve(bind, state).await {
             eprintln!("yoyo: server error: {e}");
             std::process::exit(1);

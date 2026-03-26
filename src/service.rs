@@ -1,4 +1,5 @@
-//! HTTP service: `/evolve`, `/initialise`, `/program`, `/automatic`, `/stop`, `/health`.
+//! HTTP service: `/evolve`, `/initialise`, `/program`, `/automatic`, `/stop`, `/health`,
+//! `/pi/status`, `/pi/health`, `/pi/sensors`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use tokio::sync::Mutex;
 use crate::automation::AutomationController;
 use crate::automation::AutomationError;
 use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
+use crate::pi_client::PiClient;
 use crate::state::{self, InitialiseRequest, StateError};
 
 /// Shared service state (API keys and evolution config come from environment at startup).
@@ -22,6 +24,7 @@ pub struct AppState {
     pub evolve_lock: Arc<Mutex<()>>,
     pub evolution: EvolutionConfig,
     pub automation: Arc<AutomationController>,
+    pub pi: Arc<PiClient>,
 }
 
 pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Error> {
@@ -32,6 +35,9 @@ pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Err
         .route("/program", post(program_handler))
         .route("/automatic", post(automatic_handler))
         .route("/stop", post(stop_handler))
+        .route("/pi/status", get(pi_status_handler))
+        .route("/pi/health", get(pi_health_handler))
+        .route("/pi/sensors", get(pi_sensors_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -135,4 +141,45 @@ fn automation_status(e: &AutomationError) -> (StatusCode, String) {
         AutomationError::State(_) => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (code, e.to_string())
+}
+
+// --- Pi proxy endpoints ---------------------------------------------------
+
+async fn pi_status_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let status = state
+        .pi
+        .status()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(status).unwrap_or_else(|e| json!({"error": e.to_string()})),
+    ))
+}
+
+async fn pi_health_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let health = state
+        .pi
+        .health()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(health).unwrap_or_else(|e| json!({"error": e.to_string()})),
+    ))
+}
+
+async fn pi_sensors_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let sensors = state
+        .pi
+        .sensors()
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    Ok(Json(
+        serde_json::to_value(sensors).unwrap_or_else(|e| json!({"error": e.to_string()})),
+    ))
 }
