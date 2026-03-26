@@ -101,4 +101,59 @@ mod tests {
         let req = InitialiseRequest { trains };
         assert!(req.validate().is_err());
     }
+
+    #[test]
+    fn validate_ok_trains() {
+        let req = InitialiseRequest {
+            trains: vec![
+                TrainPosition { sensor: 1 },
+                TrainPosition { sensor: 12 },
+                TrainPosition { sensor: 24 },
+            ],
+        };
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_invalid_sensor_zero() {
+        let req = InitialiseRequest {
+            trains: vec![TrainPosition { sensor: 0 }],
+        };
+        assert!(matches!(req.validate(), Err(StateError::InvalidSensor(0))));
+    }
+
+    #[test]
+    fn validate_invalid_sensor_high() {
+        let req = InitialiseRequest {
+            trains: vec![TrainPosition { sensor: 25 }],
+        };
+        assert!(matches!(
+            req.validate(),
+            Err(StateError::InvalidSensor(25))
+        ));
+    }
+
+    #[test]
+    fn save_load_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trains.json");
+        let req = InitialiseRequest {
+            trains: vec![
+                TrainPosition { sensor: 3 },
+                TrainPosition { sensor: 18 },
+            ],
+        };
+        req.save(&path).unwrap();
+        let loaded = InitialiseRequest::load(&path).unwrap().unwrap();
+        assert_eq!(loaded.trains.len(), 2);
+        assert_eq!(loaded.trains[0].sensor, 3);
+        assert_eq!(loaded.trains[1].sensor, 18);
+    }
+
+    #[test]
+    fn load_missing_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.json");
+        assert!(InitialiseRequest::load(&path).unwrap().is_none());
+    }
 }

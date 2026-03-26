@@ -34,6 +34,8 @@ use yoyo::evolve_session::EvolutionConfig;
 use yoyo::prompts::SYSTEM_PROMPT;
 use yoyo::service::{serve, AppState};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 // ANSI color helpers
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -44,8 +46,47 @@ const CYAN: &str = "\x1b[36m";
 const RED: &str = "\x1b[31m";
 
 fn print_banner() {
-    println!("\n{BOLD}{CYAN}  yoyo{RESET} {DIM}— a coding agent growing up in public{RESET}");
+    println!("\n{BOLD}{CYAN}  yoyo{RESET} v{VERSION} {DIM}— a coding agent growing up in public{RESET}");
     println!("{DIM}  Type /quit to exit, /clear to reset{RESET}\n");
+}
+
+fn print_help() {
+    println!(
+        r#"yoyo v{VERSION} — AI model railway control agent
+
+USAGE:
+  yoyo --repl [OPTIONS]    Interactive REPL mode
+  yoyo --serve [OPTIONS]   HTTP service mode
+  yoyo --help              Show this help
+  yoyo --version           Show version
+
+REPL OPTIONS:
+  --model <name>       LLM model name (default: claude-opus-4-6)
+  --skills <dir>       Skills directory (repeatable)
+
+SERVICE OPTIONS:
+  --bind <host:port>   Bind address (default: 0.0.0.0:8080)
+  --port <port>        Bind port (default: 8080; ignored if --bind given)
+
+ENVIRONMENT:
+  ANTHROPIC_API_KEY    API key (required; also accepts API_KEY)
+  MODEL                Default model for --serve mode
+  YOYO_SKILLS          Comma-separated skill dirs for --serve mode
+
+REPL COMMANDS:
+  /quit, /exit         Exit the REPL
+  /clear               Reset conversation
+  /model <name>        Switch model (clears conversation)
+
+SERVICE ENDPOINTS:
+  GET  /health         Health check
+  POST /evolve         Trigger evolution session
+  POST /initialise     Set train positions
+  POST /program        Upload track program
+  POST /automatic      Start automatic mode
+  POST /stop           Stop automatic mode"#,
+        VERSION = VERSION,
+    );
 }
 
 fn print_usage(usage: &Usage) {
@@ -57,10 +98,10 @@ fn print_usage(usage: &Usage) {
     }
 }
 
-fn evolution_config_from_env() -> EvolutionConfig {
+fn evolution_config_from_env() -> Result<EvolutionConfig, String> {
     let api_key = std::env::var("ANTHROPIC_API_KEY")
         .or_else(|_| std::env::var("API_KEY"))
-        .expect("Set ANTHROPIC_API_KEY or API_KEY");
+        .map_err(|_| "ANTHROPIC_API_KEY or API_KEY must be set".to_string())?;
     let model = std::env::var("MODEL").unwrap_or_else(|_| "claude-opus-4-6".into());
     let skill_dirs = std::env::var("YOYO_SKILLS")
         .map(|s| {
@@ -70,19 +111,19 @@ fn evolution_config_from_env() -> EvolutionConfig {
                 .collect()
         })
         .unwrap_or_else(|_| vec!["./skills".to_string()]);
-    EvolutionConfig {
+    Ok(EvolutionConfig {
         api_key,
         model,
         skill_dirs,
-    }
+    })
 }
 
-fn parse_bind(args: &[String]) -> SocketAddr {
+fn parse_bind(args: &[String]) -> Result<SocketAddr, String> {
     if let Some(i) = args.iter().position(|a| a == "--bind") {
         if let Some(addr) = args.get(i + 1) {
-            return addr.parse().unwrap_or_else(|_| {
-                panic!("invalid --bind {addr} (use host:port, e.g. 0.0.0.0:8080)")
-            });
+            return addr
+                .parse()
+                .map_err(|_| format!("invalid --bind {addr} (use host:port, e.g. 0.0.0.0:8080)"));
         }
     }
     let port: u16 = args
@@ -91,18 +132,43 @@ fn parse_bind(args: &[String]) -> SocketAddr {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(8080);
-    SocketAddr::from(([0, 0, 0, 0], port))
+    Ok(SocketAddr::from(([0, 0, 0, 0], port)))
 }
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    // --help: print usage and exit
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return;
+    }
+
+    // --version: print version and exit
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("yoyo {}", VERSION);
+        return;
+    }
+
     if args.iter().any(|a| a == "--serve") {
-        let bind = parse_bind(&args);
+        let bind = match parse_bind(&args) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("yoyo: {e}");
+                std::process::exit(1);
+            }
+        };
+        let evolution = match evolution_config_from_env() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("yoyo: {e}");
+                std::process::exit(1);
+            }
+        };
         let state = AppState {
             evolve_lock: Arc::new(Mutex::new(())),
-            evolution: evolution_config_from_env(),
+            evolution,
             automation: Arc::new(AutomationController::new()),
         };
         eprintln!("yoyo: HTTP service on http://{bind}");
@@ -114,9 +180,14 @@ async fn main() {
         return;
     }
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY")
-        .or_else(|_| std::env::var("API_KEY"))
-        .expect("Set ANTHROPIC_API_KEY or API_KEY");
+    // Default to REPL mode (also handles explicit --repl)
+    let api_key = match std::env::var("ANTHROPIC_API_KEY").or_else(|_| std::env::var("API_KEY")) {
+        Ok(k) => k,
+        Err(_) => {
+            eprintln!("yoyo: ANTHROPIC_API_KEY or API_KEY must be set");
+            std::process::exit(1);
+        }
+    };
 
     let model = args
         .iter()
@@ -135,7 +206,13 @@ async fn main() {
     let skills = if skill_dirs.is_empty() {
         SkillSet::empty()
     } else {
-        SkillSet::load(&skill_dirs).expect("Failed to load skills")
+        match SkillSet::load(&skill_dirs) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("yoyo: failed to load skills: {e}");
+                std::process::exit(1);
+            }
+        }
     };
 
     let mut agent = Agent::new(AnthropicProvider)
@@ -150,10 +227,10 @@ async fn main() {
     if !skills.is_empty() {
         println!("{DIM}  skills: {} loaded{RESET}", skills.len());
     }
-    println!(
-        "{DIM}  cwd:   {}{RESET}\n",
-        std::env::current_dir().unwrap().display()
-    );
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "(unknown)".into());
+    println!("{DIM}  cwd:   {cwd}{RESET}\n");
 
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
@@ -318,5 +395,42 @@ mod tests {
     #[test]
     fn test_truncate_empty() {
         assert_eq!(truncate("", 5), "");
+    }
+
+    #[test]
+    fn test_parse_bind_default() {
+        let args: Vec<String> = vec!["yoyo".into(), "--serve".into()];
+        let addr = parse_bind(&args).unwrap();
+        assert_eq!(addr, SocketAddr::from(([0, 0, 0, 0], 8080)));
+    }
+
+    #[test]
+    fn test_parse_bind_custom_port() {
+        let args: Vec<String> = vec!["yoyo".into(), "--serve".into(), "--port".into(), "9090".into()];
+        let addr = parse_bind(&args).unwrap();
+        assert_eq!(addr, SocketAddr::from(([0, 0, 0, 0], 9090)));
+    }
+
+    #[test]
+    fn test_parse_bind_custom_address() {
+        let args: Vec<String> = vec!["yoyo".into(), "--serve".into(), "--bind".into(), "127.0.0.1:3000".into()];
+        let addr = parse_bind(&args).unwrap();
+        assert_eq!(addr, SocketAddr::from(([127, 0, 0, 1], 3000)));
+    }
+
+    #[test]
+    fn test_parse_bind_invalid_address() {
+        let args: Vec<String> = vec!["yoyo".into(), "--bind".into(), "not-an-addr".into()];
+        assert!(parse_bind(&args).is_err());
+    }
+
+    #[test]
+    fn test_version_constant() {
+        // VERSION should match Cargo.toml; ensure it parses as semver
+        let parts: Vec<&str> = VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "VERSION should be semver (x.y.z)");
+        for part in &parts {
+            assert!(part.parse::<u32>().is_ok(), "each semver component should be a number");
+        }
     }
 }
