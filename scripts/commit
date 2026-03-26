@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the full test suite; on success bump Cargo.toml patch version, then git add -A, commit, push.
+# Run the same checks as .github/workflows/ci.yml; on success bump patch version, then git add -A, commit, push.
 # Usage: ./scripts/commit "Your commit message"
 set -euo pipefail
 
@@ -19,12 +19,25 @@ if [ ! -f "$CARGO_TOML" ]; then
   exit 1
 fi
 
-echo "Running cargo test (full suite)..."
-if ! cargo test; then
-  echo "error: tests failed. Fix failures before committing." >&2
+ci_die() {
+  echo "error: $1 failed. Fix before committing." >&2
   echo "error: no version bump and no git commands were run." >&2
   exit 1
-fi
+}
+
+echo "Running CI checks (same as .github/workflows/ci.yml)..."
+
+echo "==> cargo build"
+if ! cargo build; then ci_die "cargo build"; fi
+
+echo "==> cargo test"
+if ! cargo test; then ci_die "cargo test"; fi
+
+echo "==> cargo clippy --all-targets -- -D warnings"
+if ! cargo clippy --all-targets -- -D warnings; then ci_die "cargo clippy"; fi
+
+echo "==> cargo fmt -- --check"
+if ! cargo fmt -- --check; then ci_die "cargo fmt --check"; fi
 
 # First line that looks like [package] version (starts the line, after optional indent).
 current=$(
