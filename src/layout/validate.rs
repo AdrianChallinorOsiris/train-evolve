@@ -371,12 +371,19 @@ sensor_ids = [1]
         layout.validate().expect("valid stub");
     }
 
-    /// Canonical `data/track_layout.toml` must parse and deserialize. (Call [`TrackLayout::validate`]
-    /// separately when checking connection pairing and other graph rules.)
+    /// Canonical `data/track_layout.toml` must parse and deserialize.
     #[test]
     fn data_track_layout_toml_loads() {
         let path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
         let _layout = TrackLayout::from_path(&path).expect("data/track_layout.toml should load");
+    }
+
+    /// Canonical layout must also pass all validation rules (ranges, connections, stations).
+    #[test]
+    fn data_track_layout_toml_validates() {
+        let path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
+        let layout = TrackLayout::from_path(&path).expect("load");
+        layout.validate().expect("canonical layout should validate");
     }
 
     #[test]

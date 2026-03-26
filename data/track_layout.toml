@@ -69,7 +69,7 @@ along_fwd = [
   { kind = "coupler", id = 3 },
   { kind = "sensor", id = 16 },
   { kind = "coupler", id = 4 },
-  { kind = "connection", id = 7, peer_track = 8, peer_side = "bwd" },
+  { kind = "connection", id = 7, peer_track = 5, peer_side = "bwd" },
 ]
 
 [[tracks]]
@@ -84,7 +84,7 @@ along_fwd = [
 [[tracks]]
 id = 8
 along_fwd = [
-  { kind = "point", id = 9, entry = [{ kind = "sensor", id = 13 }, { kind = "sensor", id = 14 }, { kind = "connection", id = 13, peer_track = 6, peer_side = "bwd" }], thru = [{ kind = "connection", id = 12, peer_track = 7, peer_side = "fwd" }], branch = [{ kind = "connection", id = 11, peer_track = 10, peer_side = "fwd" }] },
+  { kind = "point", id = 9, entry = [{ kind = "sensor", id = 13 }, { kind = "sensor", id = 14 }, { kind = "connection", id = 13, peer_track = 6, peer_side = "bwd" }], thru = [{ kind = "connection", id = 12, peer_track = 7, peer_side = "fwd" }], branch = [{ kind = "connection", id = 14, peer_track = 10, peer_side = "fwd" }] },
 ]
 
 # --- Remaining segments -----------------------------------------------------
@@ -102,7 +102,7 @@ id = 10
 along_fwd = [
   { kind = "connection", id = 10, peer_track = 5, peer_side = "fwd" },
   { kind = "sensor", id = 17 },
-  { kind = "connection", id = 11, peer_track = 8, peer_side = "bwd" },
+  { kind = "connection", id = 14, peer_track = 8, peer_side = "bwd" },
 ]
 
 [[tracks]]
