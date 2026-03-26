@@ -1,21 +1,24 @@
 //! HTTP service: `/evolve`, `/initialise`, `/program`, `/automatic`, `/stop`, `/health`,
-//! `/pi/status`, `/pi/health`, `/pi/sensors`.
+//! `/pi/status`, `/pi/health`, `/pi/sensors`,
+//! `/pi/track/:id/speed`, `/pi/track/:id/stop`, `/pi/allstop`,
+//! `/pi/point/:id`, `/pi/sensor/:id`, `/pi/sensors/reset`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::automation::AutomationController;
 use crate::automation::AutomationError;
 use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
-use crate::pi_client::PiClient;
+use crate::pi_client::{PiClient, PointDirection, TrackDirection};
 use crate::state::{self, InitialiseRequest, StateError};
 
 /// Shared service state (API keys and evolution config come from environment at startup).
@@ -35,9 +38,17 @@ pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Err
         .route("/program", post(program_handler))
         .route("/automatic", post(automatic_handler))
         .route("/stop", post(stop_handler))
+        // Pi read-only proxies
         .route("/pi/status", get(pi_status_handler))
         .route("/pi/health", get(pi_health_handler))
         .route("/pi/sensors", get(pi_sensors_handler))
+        // Pi control endpoints
+        .route("/pi/track/{id}/speed", post(pi_track_speed_handler))
+        .route("/pi/track/{id}/stop", post(pi_track_stop_handler))
+        .route("/pi/allstop", post(pi_allstop_handler))
+        .route("/pi/point/{id}", post(pi_point_handler))
+        .route("/pi/sensor/{id}", post(pi_sensor_handler))
+        .route("/pi/sensors/reset", post(pi_sensors_reset_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -182,4 +193,133 @@ async fn pi_sensors_handler(
     Ok(Json(
         serde_json::to_value(sensors).unwrap_or_else(|e| json!({"error": e.to_string()})),
     ))
+}
+
+// --- Pi control endpoints --------------------------------------------------
+
+/// Query params for `POST /pi/track/:id/speed`.
+#[derive(Debug, Deserialize)]
+struct TrackSpeedParams {
+    direction: TrackDirection,
+    speed: u8,
+}
+
+async fn pi_track_speed_handler(
+    State(state): State<AppState>,
+    Path(id): Path<u8>,
+    Query(params): Query<TrackSpeedParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .pi
+        .set_track_speed(id, params.direction, params.speed)
+        .await
+        .map_err(pi_control_error)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "track": id,
+        "direction": params.direction.to_string(),
+        "speed": params.speed,
+    })))
+}
+
+async fn pi_track_stop_handler(
+    State(state): State<AppState>,
+    Path(id): Path<u8>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .pi
+        .stop_track(id)
+        .await
+        .map_err(pi_control_error)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "track": id,
+        "action": "stopped",
+    })))
+}
+
+async fn pi_allstop_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .pi
+        .all_stop()
+        .await
+        .map_err(pi_control_error)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "action": "all_stop",
+    })))
+}
+
+/// Query params for `POST /pi/point/:id`.
+#[derive(Debug, Deserialize)]
+struct PointParams {
+    direction: PointDirection,
+}
+
+async fn pi_point_handler(
+    State(state): State<AppState>,
+    Path(id): Path<u8>,
+    Query(params): Query<PointParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .pi
+        .set_point(id, params.direction)
+        .await
+        .map_err(pi_control_error)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "point": id,
+        "direction": params.direction.to_string(),
+    })))
+}
+
+/// Query params for `POST /pi/sensor/:id`.
+#[derive(Debug, Deserialize)]
+struct SensorParams {
+    value: bool,
+}
+
+async fn pi_sensor_handler(
+    State(state): State<AppState>,
+    Path(id): Path<u8>,
+    Query(params): Query<SensorParams>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .pi
+        .set_sensor(id, params.value)
+        .await
+        .map_err(pi_control_error)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "sensor": id,
+        "value": params.value,
+    })))
+}
+
+async fn pi_sensors_reset_handler(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .pi
+        .reset_sensors()
+        .await
+        .map_err(pi_control_error)?;
+    Ok(Json(json!({
+        "status": "ok",
+        "action": "sensors_reset",
+    })))
+}
+
+/// Map PiError to HTTP status codes.
+fn pi_control_error(e: crate::pi_client::PiError) -> (StatusCode, String) {
+    use crate::pi_client::PiError;
+    let code = match &e {
+        PiError::InvalidParam(_) => StatusCode::BAD_REQUEST,
+        PiError::Unreachable(_) => StatusCode::BAD_GATEWAY,
+        PiError::ApiError(_) => StatusCode::BAD_GATEWAY,
+        PiError::BadResponse(_) => StatusCode::BAD_GATEWAY,
+    };
+    (code, e.to_string())
 }

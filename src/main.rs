@@ -91,7 +91,13 @@ SERVICE ENDPOINTS:
   POST /stop           Stop automatic mode
   GET  /pi/status      Live track/point/sensor status from Pi
   GET  /pi/health      Pi hardware health
-  GET  /pi/sensors     All sensor values"#,
+  GET  /pi/sensors     All sensor values
+  POST /pi/track/:id/speed?direction=FWD&speed=50  Set track speed
+  POST /pi/track/:id/stop     Stop one track
+  POST /pi/allstop            Emergency stop all tracks
+  POST /pi/point/:id?direction=THRU  Switch a point
+  POST /pi/sensor/:id?value=true     Force a sensor (testing)
+  POST /pi/sensors/reset             Clear all sensors"#,
         VERSION = VERSION,
     );
 }
@@ -182,7 +188,9 @@ async fn main() {
             pi: Arc::new(PiClient::new(&pi_url)),
         };
         eprintln!("yoyo: HTTP service on http://{bind}");
-        eprintln!("yoyo: POST /evolve /initialise /program /automatic /stop  GET /health /pi/status /pi/health /pi/sensors");
+        eprintln!("yoyo: POST /evolve /initialise /program /automatic /stop");
+        eprintln!("yoyo: GET  /health /pi/status /pi/health /pi/sensors");
+        eprintln!("yoyo: POST /pi/track/:id/speed /pi/track/:id/stop /pi/allstop /pi/point/:id /pi/sensor/:id /pi/sensors/reset");
         if let Err(e) = serve(bind, state).await {
             eprintln!("yoyo: server error: {e}");
             std::process::exit(1);
