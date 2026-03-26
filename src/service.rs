@@ -56,18 +56,21 @@ pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Err
     Ok(())
 }
 
-async fn health_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
-    let automatic = state.automation.is_running().await;
-    Json(json!({
-        "status": "ok",
-        "automatic": automatic,
-    }))
-}
+impl AppState {
+    /// Same payload as `GET /health`.
+    pub async fn health_json(&self) -> serde_json::Value {
+        let automatic = self.automation.is_running().await;
+        json!({
+            "status": "ok",
+            "automatic": automatic,
+        })
+    }
 
-async fn evolve_handler(State(state): State<AppState>) -> Response {
-    let _guard = state.evolve_lock.lock().await;
-    match run_evolution(&state.evolution).await {
-        Ok(out) => Json(json!({
+    /// Same payload as successful `POST /evolve`.
+    pub async fn evolve_json(&self) -> Result<serde_json::Value, EvolutionError> {
+        let _guard = self.evolve_lock.lock().await;
+        let out = run_evolution(&self.evolution).await?;
+        Ok(json!({
             "status": "completed",
             "session": out.session,
             "transcript": out.transcript,
@@ -77,7 +80,144 @@ async fn evolve_handler(State(state): State<AppState>) -> Response {
             },
             "warnings": out.warnings,
         }))
-        .into_response(),
+    }
+
+    /// Same as `POST /automatic`.
+    pub async fn automatic_start_json(&self) -> Result<serde_json::Value, AutomationError> {
+        self.automation.start().await?;
+        Ok(json!({
+            "status": "running",
+            "message": "boss-level automatic mode started (timetable loop is a placeholder until Pi/routing integration)",
+        }))
+    }
+
+    /// Same as `POST /stop`.
+    pub async fn automatic_stop_json(&self) -> Result<serde_json::Value, AutomationError> {
+        self.automation.stop().await?;
+        Ok(json!({
+            "status": "stopped",
+            "message": "automation stopped; train positions restored from snapshot taken at /automatic start",
+        }))
+    }
+
+    /// Same as `GET /pi/status`.
+    pub async fn pi_status_json(&self) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        let status = self.pi.status().await?;
+        Ok(serde_json::to_value(status).unwrap_or_else(|e| json!({"error": e.to_string()})))
+    }
+
+    /// Same as `GET /pi/health`.
+    pub async fn pi_health_json(&self) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        let health = self.pi.health().await?;
+        Ok(serde_json::to_value(health).unwrap_or_else(|e| json!({"error": e.to_string()})))
+    }
+
+    /// Same as `GET /pi/sensors`.
+    pub async fn pi_sensors_list_json(
+        &self,
+    ) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        let sensors = self.pi.sensors().await?;
+        Ok(serde_json::to_value(sensors).unwrap_or_else(|e| json!({"error": e.to_string()})))
+    }
+
+    pub async fn pi_track_speed_json(
+        &self,
+        id: u8,
+        direction: TrackDirection,
+        speed: u8,
+    ) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        self.pi.set_track_speed(id, direction, speed).await?;
+        Ok(json!({
+            "status": "ok",
+            "track": id,
+            "direction": direction.to_string(),
+            "speed": speed,
+        }))
+    }
+
+    pub async fn pi_track_stop_json(
+        &self,
+        id: u8,
+    ) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        self.pi.stop_track(id).await?;
+        Ok(json!({
+            "status": "ok",
+            "track": id,
+            "action": "stopped",
+        }))
+    }
+
+    pub async fn pi_all_stop_json(&self) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        self.pi.all_stop().await?;
+        Ok(json!({
+            "status": "ok",
+            "action": "all_stop",
+        }))
+    }
+
+    pub async fn pi_point_json(
+        &self,
+        id: u8,
+        direction: PointDirection,
+    ) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        self.pi.set_point(id, direction).await?;
+        Ok(json!({
+            "status": "ok",
+            "point": id,
+            "direction": direction.to_string(),
+        }))
+    }
+
+    pub async fn pi_sensor_json(
+        &self,
+        id: u8,
+        value: bool,
+    ) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        self.pi.set_sensor(id, value).await?;
+        Ok(json!({
+            "status": "ok",
+            "sensor": id,
+            "value": value,
+        }))
+    }
+
+    pub async fn pi_sensors_reset_json(
+        &self,
+    ) -> Result<serde_json::Value, crate::pi_client::PiError> {
+        self.pi.reset_sensors().await?;
+        Ok(json!({
+            "status": "ok",
+            "action": "sensors_reset",
+        }))
+    }
+}
+
+/// Same as `POST /initialise` (no `AppState` required).
+pub fn initialise_json(body: InitialiseRequest) -> Result<serde_json::Value, StateError> {
+    body.validate()?;
+    body.save(&state::trains_path())?;
+    Ok(json!({
+        "status": "ok",
+        "trains": body.trains.len(),
+    }))
+}
+
+/// Same as `POST /program`.
+pub fn program_json(payload: serde_json::Value) -> Result<serde_json::Value, StateError> {
+    state::save_program_placeholder(&payload)?;
+    Ok(json!({
+        "status": "accepted",
+        "message": "reserved for future track program; payload stored under data/runtime/program.json",
+    }))
+}
+
+async fn health_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(state.health_json().await)
+}
+
+async fn evolve_handler(State(state): State<AppState>) -> Response {
+    match state.evolve_json().await {
+        Ok(j) => Json(j).into_response(),
         Err(e) => evolve_error_response(e),
     }
 }
@@ -95,53 +235,45 @@ async fn initialise_handler(
     State(_state): State<AppState>,
     Json(body): Json<InitialiseRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    body.validate()
-        .map_err(|e: StateError| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    body.save(&state::trains_path())
-        .map_err(|e: StateError| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(json!({
-        "status": "ok",
-        "trains": body.trains.len(),
-    })))
+    initialise_json(body)
+        .map_err(|e: StateError| {
+            let code = match &e {
+                StateError::TooManyTrains(_) | StateError::InvalidSensor(_) => {
+                    StatusCode::BAD_REQUEST
+                }
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (code, e.to_string())
+        })
+        .map(Json)
 }
 
 async fn program_handler(
     Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    state::save_program_placeholder(&payload)
-        .map_err(|e: StateError| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(json!({
-        "status": "accepted",
-        "message": "reserved for future track program; payload stored under data/runtime/program.json",
-    })))
+    program_json(payload)
+        .map_err(|e: StateError| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(Json)
 }
 
 async fn automatic_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .automation
-        .start()
+        .automatic_start_json()
         .await
-        .map_err(|e: AutomationError| automation_status(&e))?;
-    Ok(Json(json!({
-        "status": "running",
-        "message": "boss-level automatic mode started (timetable loop is a placeholder until Pi/routing integration)",
-    })))
+        .map_err(|e: AutomationError| automation_status(&e))
+        .map(Json)
 }
 
 async fn stop_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .automation
-        .stop()
+        .automatic_stop_json()
         .await
-        .map_err(|e: AutomationError| automation_status(&e))?;
-    Ok(Json(json!({
-        "status": "stopped",
-        "message": "automation stopped; train positions restored from snapshot taken at /automatic start",
-    })))
+        .map_err(|e: AutomationError| automation_status(&e))
+        .map(Json)
 }
 
 fn automation_status(e: &AutomationError) -> (StatusCode, String) {
@@ -159,40 +291,31 @@ fn automation_status(e: &AutomationError) -> (StatusCode, String) {
 async fn pi_status_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let status = state
-        .pi
-        .status()
+    state
+        .pi_status_json()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
-    Ok(Json(
-        serde_json::to_value(status).unwrap_or_else(|e| json!({"error": e.to_string()})),
-    ))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))
+        .map(Json)
 }
 
 async fn pi_health_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let health = state
-        .pi
-        .health()
+    state
+        .pi_health_json()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
-    Ok(Json(
-        serde_json::to_value(health).unwrap_or_else(|e| json!({"error": e.to_string()})),
-    ))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))
+        .map(Json)
 }
 
 async fn pi_sensors_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let sensors = state
-        .pi
-        .sensors()
+    state
+        .pi_sensors_list_json()
         .await
-        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
-    Ok(Json(
-        serde_json::to_value(sensors).unwrap_or_else(|e| json!({"error": e.to_string()})),
-    ))
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))
+        .map(Json)
 }
 
 // --- Pi control endpoints --------------------------------------------------
@@ -210,16 +333,10 @@ async fn pi_track_speed_handler(
     Query(params): Query<TrackSpeedParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .pi
-        .set_track_speed(id, params.direction, params.speed)
+        .pi_track_speed_json(id, params.direction, params.speed)
         .await
-        .map_err(pi_control_error)?;
-    Ok(Json(json!({
-        "status": "ok",
-        "track": id,
-        "direction": params.direction.to_string(),
-        "speed": params.speed,
-    })))
+        .map_err(pi_control_error)
+        .map(Json)
 }
 
 async fn pi_track_stop_handler(
@@ -227,29 +344,20 @@ async fn pi_track_stop_handler(
     Path(id): Path<u8>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .pi
-        .stop_track(id)
+        .pi_track_stop_json(id)
         .await
-        .map_err(pi_control_error)?;
-    Ok(Json(json!({
-        "status": "ok",
-        "track": id,
-        "action": "stopped",
-    })))
+        .map_err(pi_control_error)
+        .map(Json)
 }
 
 async fn pi_allstop_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .pi
-        .all_stop()
+        .pi_all_stop_json()
         .await
-        .map_err(pi_control_error)?;
-    Ok(Json(json!({
-        "status": "ok",
-        "action": "all_stop",
-    })))
+        .map_err(pi_control_error)
+        .map(Json)
 }
 
 /// Query params for `POST /pi/point/:id`.
@@ -264,15 +372,10 @@ async fn pi_point_handler(
     Query(params): Query<PointParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .pi
-        .set_point(id, params.direction)
+        .pi_point_json(id, params.direction)
         .await
-        .map_err(pi_control_error)?;
-    Ok(Json(json!({
-        "status": "ok",
-        "point": id,
-        "direction": params.direction.to_string(),
-    })))
+        .map_err(pi_control_error)
+        .map(Json)
 }
 
 /// Query params for `POST /pi/sensor/:id`.
@@ -287,29 +390,20 @@ async fn pi_sensor_handler(
     Query(params): Query<SensorParams>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .pi
-        .set_sensor(id, params.value)
+        .pi_sensor_json(id, params.value)
         .await
-        .map_err(pi_control_error)?;
-    Ok(Json(json!({
-        "status": "ok",
-        "sensor": id,
-        "value": params.value,
-    })))
+        .map_err(pi_control_error)
+        .map(Json)
 }
 
 async fn pi_sensors_reset_handler(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
-        .pi
-        .reset_sensors()
+        .pi_sensors_reset_json()
         .await
-        .map_err(pi_control_error)?;
-    Ok(Json(json!({
-        "status": "ok",
-        "action": "sensors_reset",
-    })))
+        .map_err(pi_control_error)
+        .map(Json)
 }
 
 /// Map PiError to HTTP status codes.

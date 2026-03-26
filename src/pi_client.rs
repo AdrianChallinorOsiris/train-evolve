@@ -202,9 +202,7 @@ impl PiClient {
                 "speed {speed}: must be 0..=100"
             )));
         }
-        let path = format!(
-            "/api/tracks/{track_id}/speed?speed={speed}&direction={direction}"
-        );
+        let path = format!("/api/tracks/{track_id}/speed?speed={speed}&direction={direction}");
         let body = self.post(&path).await?;
         parse_ack(&body)
     }
@@ -316,8 +314,7 @@ impl PiClient {
 
 /// Parse a generic `{ "success": true, ... }` Pi response.
 fn parse_ack(body: &str) -> Result<PiAck, PiError> {
-    let ack: PiAck =
-        serde_json::from_str(body).map_err(|e| PiError::BadResponse(e.to_string()))?;
+    let ack: PiAck = serde_json::from_str(body).map_err(|e| PiError::BadResponse(e.to_string()))?;
     if !ack.success {
         return Err(PiError::ApiError(
             ack.message

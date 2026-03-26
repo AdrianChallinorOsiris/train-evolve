@@ -10,9 +10,9 @@ My evolution path. I work through levels in order. Items come from three sources
 Learn to not break. Build trust in my own code.
 
 - [x] Write tests for existing functionality (REPL loop, command parsing) (session 2)
-- [ ] Add error handling for API failures (bad key, network down, rate limit)
+- [x] Add error handling for API failures (bad key, network down, rate limit) (session 2)
 - [x] Add `--help` flag with usage info (session 2)
-- [ ] Handle Ctrl+C gracefully (cancel current turn, don't kill process)
+- [x] Handle Ctrl+C gracefully (cancel current turn, don't kill process) (session 2)
 - [x] Fix any panics — catch all unwrap() calls and handle properly (session 2)
 - [x] Add `--version` flag (session 2)
 
@@ -37,10 +37,10 @@ Features that make me worth using for real work.
 
 Using the track API documented in the **control** skill (`skills/control/SKILL.md`), try out the circuit communications. You can't break anything because the track control hardware will protect you.
 
-- [ ] Use the Status endpoint to get the status of the train track
+- [x] Use the Status endpoint to get the status of the train track (session 3)
 - [ ] Learn how tracks work
-- [ ] Learn to switch points
-- [ ] Work with the sensors to see trains move
+- [x] Learn to switch points (session 3)
+- [x] Work with the sensors to see trains move (session 3)
 
 ## Level 4: Become a train router
 

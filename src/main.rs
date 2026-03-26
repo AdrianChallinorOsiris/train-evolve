@@ -16,7 +16,8 @@
 //! ANTHROPIC_API_KEY=sk-... cargo run -- --repl --model claude-opus-4-6 --skills ./skills
 //! ```
 //!
-//! REPL commands: `/quit`, `/exit`, `/clear`, `/model <name>`
+//! REPL commands: `/quit`, `/exit`, `/clear`, `/model <name>`, plus the same
+//! control endpoints as `--serve` (`/health`, `/evolve`, `/initialise`, …).
 
 use std::io::{self, BufRead, Write};
 use std::net::SocketAddr;
@@ -31,9 +32,11 @@ use yoagent::*;
 
 use yoyo::automation::AutomationController;
 use yoyo::evolve_session::EvolutionConfig;
-use yoyo::pi_client::PiClient;
+use yoyo::pi_client::DEFAULT_PI_URL;
+use yoyo::pi_client::{PiClient, PointDirection, TrackDirection};
 use yoyo::prompts::SYSTEM_PROMPT;
-use yoyo::service::{serve, AppState};
+use yoyo::service::{initialise_json, program_json, serve, AppState};
+use yoyo::state::InitialiseRequest;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -81,8 +84,21 @@ REPL COMMANDS:
   /quit, /exit         Exit the REPL
   /clear               Reset conversation
   /model <name>        Switch model (clears conversation)
+  /health              Same as GET /health
+  /evolve              Same as POST /evolve
+  /initialise <json>   Same as POST /initialise (JSON on one line)
+  /program <json>      Same as POST /program
+  /automatic           Same as POST /automatic
+  /stop                Same as POST /stop
+  /pi status|health|sensors
+  /pi sensors reset
+  /pi track speed <id> OFF|FWD|BCK <0-255>
+  /pi track stop <id>
+  /pi allstop
+  /pi point <id> THRU|BRANCH
+  /pi sensor <id> true|false
 
-SERVICE ENDPOINTS:
+HTTP (--serve) ENDPOINTS:
   GET  /health         Health check
   POST /evolve         Trigger evolution session
   POST /initialise     Set train positions
@@ -217,7 +233,7 @@ async fn main() {
         );
     }
 
-    let model = args
+    let mut model = args
         .iter()
         .position(|a| a == "--model")
         .and_then(|i| args.get(i + 1))
@@ -250,6 +266,23 @@ async fn main() {
         .with_skills(skills.clone())
         .with_tools(default_tools());
 
+    let skill_dirs_for_evo: Vec<String> = if skill_dirs.is_empty() {
+        vec!["./skills".to_string()]
+    } else {
+        skill_dirs.clone()
+    };
+    let pi_url = std::env::var("PI_URL").unwrap_or_else(|_| DEFAULT_PI_URL.to_string());
+    let mut repl_state = AppState {
+        evolve_lock: Arc::new(Mutex::new(())),
+        evolution: EvolutionConfig {
+            api_key: api_key.clone(),
+            model: model.clone(),
+            skill_dirs: skill_dirs_for_evo,
+        },
+        automation: Arc::new(AutomationController::new()),
+        pi: Arc::new(PiClient::new(&pi_url)),
+    };
+
     print_banner();
     println!("{DIM}  model: {model}{RESET}");
     if !skills.is_empty() {
@@ -281,14 +314,22 @@ async fn main() {
         match input {
             "/quit" | "/exit" => break,
             "/help" => {
-                println!("\n{BOLD}  Commands:{RESET}");
-                println!("  {GREEN}/help{RESET}          Show this help");
-                println!("  {GREEN}/clear{RESET}         Clear conversation history");
-                println!("  {GREEN}/model <name>{RESET}  Switch model (clears conversation)");
-                println!("  {GREEN}/quit{RESET}          Exit");
+                println!("\n{BOLD}  REPL:{RESET}");
+                println!("  {GREEN}/help{RESET}               This list");
+                println!("  {GREEN}/clear{RESET}              Clear conversation history");
+                println!("  {GREEN}/model <name>{RESET}       Switch model (clears conversation)");
+                println!("  {GREEN}/quit{RESET}               Exit");
+                println!("\n{BOLD}  Service (same as HTTP --serve):{RESET}");
+                println!("  {GREEN}/health{RESET}  {GREEN}/evolve{RESET}  {GREEN}/automatic{RESET}  {GREEN}/stop{RESET}");
+                println!(
+                    "  {GREEN}/initialise <json>{RESET}   e.g. {{\"trains\":[{{\"sensor\":3}}]}}"
+                );
+                println!("  {GREEN}/program <json>{RESET}      track program placeholder JSON");
+                println!("  {GREEN}/pi status{RESET}  {GREEN}/pi health{RESET}  {GREEN}/pi sensors{RESET}  …");
                 println!();
                 println!("  {DIM}Ctrl+C during a response cancels the current turn.{RESET}");
-                println!("  {DIM}Anything else is sent as a message to the agent.{RESET}\n");
+                println!("  {DIM}Other input is sent to the agent.{RESET}");
+                println!("  {DIM}Full list: run `yoyo --help`{RESET}\n");
                 continue;
             }
             "/clear" => {
@@ -303,6 +344,8 @@ async fn main() {
             }
             s if s.starts_with("/model ") => {
                 let new_model = s.trim_start_matches("/model ").trim();
+                model = new_model.to_string();
+                repl_state.evolution.model = new_model.to_string();
                 agent = Agent::new(AnthropicProvider)
                     .with_system_prompt(SYSTEM_PROMPT)
                     .with_model(new_model)
@@ -310,6 +353,16 @@ async fn main() {
                     .with_skills(skills.clone())
                     .with_tools(default_tools());
                 println!("{DIM}  (switched to {new_model}, conversation cleared){RESET}\n");
+                continue;
+            }
+            s if s.starts_with('/') => {
+                if repl_service_dispatch(s, &repl_state).await {
+                    println!();
+                    continue;
+                }
+                eprintln!(
+                    "{RED}  unknown command (try /help). Messages to the agent must not start with /{RESET}\n"
+                );
                 continue;
             }
             _ => {}
@@ -430,6 +483,224 @@ async fn main() {
     }
 
     println!("\n{DIM}  bye 👋{RESET}\n");
+}
+
+fn print_json_pretty(v: &serde_json::Value) {
+    match serde_json::to_string_pretty(v) {
+        Ok(s) => println!("{s}"),
+        Err(_) => println!("{}", v),
+    }
+}
+
+fn parse_track_direction(s: &str) -> Result<TrackDirection, String> {
+    match s.to_ascii_uppercase().as_str() {
+        "OFF" => Ok(TrackDirection::Off),
+        "FWD" => Ok(TrackDirection::Fwd),
+        "BCK" => Ok(TrackDirection::Bck),
+        _ => Err(format!("expected OFF|FWD|BCK, got {s:?}")),
+    }
+}
+
+fn parse_point_direction(s: &str) -> Result<PointDirection, String> {
+    match s.to_ascii_uppercase().as_str() {
+        "THRU" => Ok(PointDirection::Thru),
+        "BRANCH" => Ok(PointDirection::Branch),
+        _ => Err(format!("expected THRU|BRANCH, got {s:?}")),
+    }
+}
+
+fn parse_bool_word(s: &str) -> Result<bool, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Ok(true),
+        "false" | "0" | "no" => Ok(false),
+        _ => Err(format!("expected true|false, got {s:?}")),
+    }
+}
+
+async fn repl_pi_dispatch(line: &str, state: &AppState) -> Result<(), String> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    if parts.first().copied() != Some("/pi") {
+        return Err("expected line to start with /pi".into());
+    }
+    if parts.len() < 2 {
+        return Err("/pi: add a subcommand (status, health, sensors, track, …)".into());
+    }
+    match parts[1] {
+        "status" => {
+            let v = state.pi_status_json().await.map_err(|e| e.to_string())?;
+            print_json_pretty(&v);
+            Ok(())
+        }
+        "health" => {
+            let v = state.pi_health_json().await.map_err(|e| e.to_string())?;
+            print_json_pretty(&v);
+            Ok(())
+        }
+        "sensors" => {
+            if parts.len() == 3 && parts[2] == "reset" {
+                let v = state
+                    .pi_sensors_reset_json()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json_pretty(&v);
+            } else if parts.len() == 2 {
+                let v = state
+                    .pi_sensors_list_json()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json_pretty(&v);
+            } else {
+                return Err(
+                    "/pi sensors [reset] — use `/pi sensors` or `/pi sensors reset`".into(),
+                );
+            }
+            Ok(())
+        }
+        "track" => {
+            if parts.len() >= 3 && parts[2] == "speed" {
+                if parts.len() < 6 {
+                    return Err(
+                        "/pi track speed <id> OFF|FWD|BCK <speed> — not enough arguments".into(),
+                    );
+                }
+                let id = parts[3]
+                    .parse::<u8>()
+                    .map_err(|_| format!("invalid track id {:?}", parts[3]))?;
+                let dir = parse_track_direction(parts[4])?;
+                let speed = parts[5]
+                    .parse::<u8>()
+                    .map_err(|_| format!("invalid speed {:?}", parts[5]))?;
+                let v = state
+                    .pi_track_speed_json(id, dir, speed)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json_pretty(&v);
+                Ok(())
+            } else if parts.len() >= 3 && parts[2] == "stop" {
+                if parts.len() < 4 {
+                    return Err("/pi track stop <id>".into());
+                }
+                let id = parts[3]
+                    .parse::<u8>()
+                    .map_err(|_| format!("invalid track id {:?}", parts[3]))?;
+                let v = state
+                    .pi_track_stop_json(id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                print_json_pretty(&v);
+                Ok(())
+            } else {
+                Err("/pi track speed … or /pi track stop …".into())
+            }
+        }
+        "allstop" => {
+            let v = state.pi_all_stop_json().await.map_err(|e| e.to_string())?;
+            print_json_pretty(&v);
+            Ok(())
+        }
+        "point" => {
+            if parts.len() < 4 {
+                return Err("/pi point <id> THRU|BRANCH".into());
+            }
+            let id = parts[2]
+                .parse::<u8>()
+                .map_err(|_| format!("invalid point id {:?}", parts[2]))?;
+            let dir = parse_point_direction(parts[3])?;
+            let v = state
+                .pi_point_json(id, dir)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json_pretty(&v);
+            Ok(())
+        }
+        "sensor" => {
+            if parts.len() < 4 {
+                return Err("/pi sensor <id> true|false".into());
+            }
+            let id = parts[2]
+                .parse::<u8>()
+                .map_err(|_| format!("invalid sensor id {:?}", parts[2]))?;
+            let value = parse_bool_word(parts[3])?;
+            let v = state
+                .pi_sensor_json(id, value)
+                .await
+                .map_err(|e| e.to_string())?;
+            print_json_pretty(&v);
+            Ok(())
+        }
+        other => Err(format!("unknown /pi subcommand {other:?}")),
+    }
+}
+
+/// Returns `true` if `line` was a service command (including invalid ones we reported).
+async fn repl_service_dispatch(line: &str, state: &AppState) -> bool {
+    let line = line.trim();
+    match line {
+        "/health" => {
+            let v = state.health_json().await;
+            print_json_pretty(&v);
+            true
+        }
+        "/evolve" => {
+            match state.evolve_json().await {
+                Ok(v) => print_json_pretty(&v),
+                Err(e) => eprintln!("{RED}  evolve failed: {e}{RESET}"),
+            }
+            true
+        }
+        "/automatic" => {
+            match state.automatic_start_json().await {
+                Ok(v) => print_json_pretty(&v),
+                Err(e) => eprintln!("{RED}  automatic: {e}{RESET}"),
+            }
+            true
+        }
+        "/stop" => {
+            match state.automatic_stop_json().await {
+                Ok(v) => print_json_pretty(&v),
+                Err(e) => eprintln!("{RED}  stop: {e}{RESET}"),
+            }
+            true
+        }
+        s if s.starts_with("/initialise") => {
+            let rest = s["/initialise".len()..].trim();
+            if rest.is_empty() {
+                eprintln!("{RED}  usage: /initialise {{\"trains\":[{{\"sensor\":3}}]}}{RESET}");
+                return true;
+            }
+            match serde_json::from_str::<InitialiseRequest>(rest) {
+                Ok(body) => match initialise_json(body) {
+                    Ok(v) => print_json_pretty(&v),
+                    Err(e) => eprintln!("{RED}  initialise: {e}{RESET}"),
+                },
+                Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
+            }
+            true
+        }
+        s if s.starts_with("/program") => {
+            let rest = s["/program".len()..].trim();
+            if rest.is_empty() {
+                eprintln!("{RED}  usage: /program {{ ... }}  (JSON payload){RESET}");
+                return true;
+            }
+            match serde_json::from_str::<serde_json::Value>(rest) {
+                Ok(payload) => match program_json(payload) {
+                    Ok(v) => print_json_pretty(&v),
+                    Err(e) => eprintln!("{RED}  program: {e}{RESET}"),
+                },
+                Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
+            }
+            true
+        }
+        s if s.starts_with("/pi") => {
+            match repl_pi_dispatch(s, state).await {
+                Ok(()) => {}
+                Err(e) => eprintln!("{RED}  {e}{RESET}"),
+            }
+            true
+        }
+        _ => false,
+    }
 }
 
 fn truncate(s: &str, max: usize) -> &str {
