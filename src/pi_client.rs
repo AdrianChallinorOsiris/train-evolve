@@ -3,8 +3,8 @@
 //! The Pi runs at a configurable base URL (default `http://192.168.1.80:5000`).
 //! All methods are async and return strongly-typed Rust structs.
 
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Default base URL for the Pi API.
 pub const DEFAULT_PI_URL: &str = "http://192.168.1.80:5000";
@@ -168,7 +168,7 @@ mod tests {
         let status: PiStatus = serde_json::from_value(data.clone()).unwrap();
         assert_eq!(status.tracks.len(), 1);
         assert_eq!(status.tracks["1"].direction, "OFF");
-        assert_eq!(status.points["1"].thru, true);
+        assert!(status.points["1"].thru);
         assert_eq!(status.sensors, 0);
     }
 

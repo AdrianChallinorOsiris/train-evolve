@@ -1,6 +1,7 @@
 //! One evolution iteration (aligned with `scripts/evolve.sh`, callable from the HTTP service).
 
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 use yoagent::agent::Agent;
@@ -104,6 +105,33 @@ fn git_status_dirty() -> bool {
         .ok()
         .map(|o| !o.stdout.is_empty())
         .unwrap_or(false)
+}
+
+/// Prepends the full assistant transcript to `JOURNAL.md` (newest entry at top).
+///
+/// The prompt asks the model to edit the journal, but that is not reliable; this
+/// guarantees every successful HTTP evolution session is recorded.
+fn prepend_journal_transcript(
+    journal_path: &Path,
+    session: u32,
+    transcript: &str,
+) -> std::io::Result<()> {
+    let existing = if journal_path.exists() {
+        fs::read_to_string(journal_path)?
+    } else {
+        String::new()
+    };
+    let trimmed = transcript.trim_end();
+    let body = if trimmed.is_empty() {
+        "_No assistant text captured for this session._\n\n".to_string()
+    } else {
+        format!("{trimmed}\n\n")
+    };
+    let mut out = format!("## Session {session} — Evolution transcript\n\n{body}{existing}");
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    fs::write(journal_path, out)
 }
 
 fn git_wrap_up(session: u32) -> Result<(), String> {
@@ -253,6 +281,9 @@ pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, Ev
         ));
     }
 
+    prepend_journal_transcript(Path::new("JOURNAL.md"), session, &transcript)
+        .map_err(|e| EvolutionError::Agent(format!("failed to write JOURNAL.md: {e}")))?;
+
     let next_session = session + 1;
     write_day_count(next_session).map_err(|e| EvolutionError::Agent(e.to_string()))?;
 
@@ -270,4 +301,36 @@ pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, Ev
         usage,
         warnings,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn prepend_journal_transcript_inserts_at_top() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal = dir.path().join("JOURNAL.md");
+        fs::write(&journal, "## Old\n\nlegacy\n").expect("seed");
+
+        prepend_journal_transcript(&journal, 7, "Hello from session.").expect("prepend");
+
+        let s = fs::read_to_string(&journal).expect("read");
+        assert!(s.starts_with("## Session 7 — Evolution transcript"));
+        assert!(s.contains("Hello from session."));
+        assert!(s.contains("## Old"));
+        assert!(s.find("## Session 7").unwrap() < s.find("## Old").unwrap());
+    }
+
+    #[test]
+    fn prepend_journal_transcript_empty_transcript() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let journal: PathBuf = dir.path().join("JOURNAL.md");
+
+        prepend_journal_transcript(&journal, 1, "   \n").expect("prepend");
+
+        let s = fs::read_to_string(&journal).expect("read");
+        assert!(s.contains("_No assistant text"));
+    }
 }

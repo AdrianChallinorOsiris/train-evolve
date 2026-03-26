@@ -127,10 +127,7 @@ mod tests {
         let req = InitialiseRequest {
             trains: vec![TrainPosition { sensor: 25 }],
         };
-        assert!(matches!(
-            req.validate(),
-            Err(StateError::InvalidSensor(25))
-        ));
+        assert!(matches!(req.validate(), Err(StateError::InvalidSensor(25))));
     }
 
     #[test]
@@ -138,10 +135,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trains.json");
         let req = InitialiseRequest {
-            trains: vec![
-                TrainPosition { sensor: 3 },
-                TrainPosition { sensor: 18 },
-            ],
+            trains: vec![TrainPosition { sensor: 3 }, TrainPosition { sensor: 18 }],
         };
         req.save(&path).unwrap();
         let loaded = InitialiseRequest::load(&path).unwrap().unwrap();

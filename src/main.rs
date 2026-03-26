@@ -47,7 +47,9 @@ const CYAN: &str = "\x1b[36m";
 const RED: &str = "\x1b[31m";
 
 fn print_banner() {
-    println!("\n{BOLD}{CYAN}  yoyo{RESET} v{VERSION} {DIM}— a coding agent growing up in public{RESET}");
+    println!(
+        "\n{BOLD}{CYAN}  yoyo{RESET} v{VERSION} {DIM}— a coding agent growing up in public{RESET}"
+    );
     println!("{DIM}  Type /quit to exit, /clear to reset{RESET}\n");
 }
 
@@ -171,8 +173,8 @@ async fn main() {
                 std::process::exit(1);
             }
         };
-        let pi_url = std::env::var("PI_URL")
-            .unwrap_or_else(|_| yoyo::pi_client::DEFAULT_PI_URL.to_string());
+        let pi_url =
+            std::env::var("PI_URL").unwrap_or_else(|_| yoyo::pi_client::DEFAULT_PI_URL.to_string());
         let state = AppState {
             evolve_lock: Arc::new(Mutex::new(())),
             evolution,
@@ -201,7 +203,10 @@ async fn main() {
     if api_key.trim().is_empty() {
         eprintln!("yoyo: warning: API key is empty — API calls will fail");
     } else if api_key.len() < 10 {
-        eprintln!("yoyo: warning: API key looks too short ({} chars) — API calls may fail", api_key.len());
+        eprintln!(
+            "yoyo: warning: API key looks too short ({} chars) — API calls may fail",
+            api_key.len()
+        );
     }
 
     let model = args
@@ -395,12 +400,8 @@ async fn main() {
                                     println!();
                                     in_text = false;
                                 }
-                                let err = error_message
-                                    .as_deref()
-                                    .unwrap_or("unknown API error");
-                                eprintln!(
-                                    "\n{RED}  ⚠ API error: {err}{RESET}"
-                                );
+                                let err = error_message.as_deref().unwrap_or("unknown API error");
+                                eprintln!("\n{RED}  ⚠ API error: {err}{RESET}");
                             }
                             break;
                         }
@@ -468,14 +469,24 @@ mod tests {
 
     #[test]
     fn test_parse_bind_custom_port() {
-        let args: Vec<String> = vec!["yoyo".into(), "--serve".into(), "--port".into(), "9090".into()];
+        let args: Vec<String> = vec![
+            "yoyo".into(),
+            "--serve".into(),
+            "--port".into(),
+            "9090".into(),
+        ];
         let addr = parse_bind(&args).unwrap();
         assert_eq!(addr, SocketAddr::from(([0, 0, 0, 0], 9090)));
     }
 
     #[test]
     fn test_parse_bind_custom_address() {
-        let args: Vec<String> = vec!["yoyo".into(), "--serve".into(), "--bind".into(), "127.0.0.1:3000".into()];
+        let args: Vec<String> = vec![
+            "yoyo".into(),
+            "--serve".into(),
+            "--bind".into(),
+            "127.0.0.1:3000".into(),
+        ];
         let addr = parse_bind(&args).unwrap();
         assert_eq!(addr, SocketAddr::from(([127, 0, 0, 1], 3000)));
     }
@@ -492,7 +503,10 @@ mod tests {
         let parts: Vec<&str> = VERSION.split('.').collect();
         assert_eq!(parts.len(), 3, "VERSION should be semver (x.y.z)");
         for part in &parts {
-            assert!(part.parse::<u32>().is_ok(), "each semver component should be a number");
+            assert!(
+                part.parse::<u32>().is_ok(),
+                "each semver component should be a number"
+            );
         }
     }
 }
