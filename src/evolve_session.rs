@@ -235,7 +235,13 @@ pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, Ev
         .with_skills(skills)
         .with_tools(default_tools());
 
-    let (usage, transcript) = run_prompt(&mut agent, &prompt).await;
+    let result = run_prompt(&mut agent, &prompt).await;
+    let usage = result.usage;
+    let transcript = result.text;
+
+    if let Some(api_err) = &result.api_error {
+        return Err(EvolutionError::Agent(format!("API error: {api_err}")));
+    }
 
     let mut warnings = Vec::new();
 

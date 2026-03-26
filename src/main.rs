@@ -197,6 +197,13 @@ async fn main() {
         }
     };
 
+    // Early validation: warn (don't block) if key looks obviously wrong.
+    if api_key.trim().is_empty() {
+        eprintln!("yoyo: warning: API key is empty — API calls will fail");
+    } else if api_key.len() < 10 {
+        eprintln!("yoyo: warning: API key looks too short ({} chars) — API calls may fail", api_key.len());
+    }
+
     let model = args
         .iter()
         .position(|a| a == "--model")
@@ -349,8 +356,26 @@ async fn main() {
                 }
                 AgentEvent::AgentEnd { messages } => {
                     for msg in messages.iter().rev() {
-                        if let AgentMessage::Llm(Message::Assistant { usage, .. }) = msg {
+                        if let AgentMessage::Llm(Message::Assistant {
+                            usage,
+                            stop_reason,
+                            error_message,
+                            ..
+                        }) = msg
+                        {
                             last_usage = usage.clone();
+                            if *stop_reason == StopReason::Error {
+                                if in_text {
+                                    println!();
+                                    in_text = false;
+                                }
+                                let err = error_message
+                                    .as_deref()
+                                    .unwrap_or("unknown API error");
+                                eprintln!(
+                                    "\n{RED}  ⚠ API error: {err}{RESET}"
+                                );
+                            }
                             break;
                         }
                     }
