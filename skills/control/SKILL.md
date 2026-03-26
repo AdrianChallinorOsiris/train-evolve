@@ -17,9 +17,9 @@ You have full control over the train set. You interact via the Points, Track and
 
 ## Interface: REST calls
 
-The REST API is reachable at `http://192.168.1.80/api/<endpoint>`. There is no security because it is on a local LAN and not exposed to the internet. Calls are a mixture of GET and POST.
+The REST API is reachable at `http://192.168.1.80:5000/api/<endpoint>`. There is no security because it is on a local LAN and not exposed to the internet. Calls are a mixture of GET and POST.
 
-You can discover all calls from the OpenAPI document: http://192.168.1.80/api/openapi.json
+You can discover all calls from the OpenAPI document: http://192.168.1.80:5000/api/openapi.json
 
 If you need different endpoints, they can be added on the Pi — note what you need and request a change.
 
