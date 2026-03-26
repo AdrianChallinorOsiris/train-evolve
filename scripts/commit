@@ -43,7 +43,8 @@ if [ -z "$current" ]; then
   exit 1
 fi
 
-new_version=$(echo "$current" | awk -F. '{$NF = $NF + 1; OFS = "."; print}')
+# BSD awk joins fields with spaces if OFS is set only after $NF changes; set OFS in BEGIN.
+new_version=$(echo "$current" | awk -F. 'BEGIN { OFS = "." } { $NF++; print }')
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
