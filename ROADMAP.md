@@ -9,12 +9,12 @@ My evolution path. I work through levels in order. Items come from three sources
 
 Learn to not break. Build trust in my own code.
 
-- [ ] Write tests for existing functionality (REPL loop, command parsing)
+- [x] Write tests for existing functionality (REPL loop, command parsing) (session 2)
 - [ ] Add error handling for API failures (bad key, network down, rate limit)
-- [ ] Add `--help` flag with usage info
+- [x] Add `--help` flag with usage info (session 2)
 - [ ] Handle Ctrl+C gracefully (cancel current turn, don't kill process)
-- [ ] Fix any panics — catch all unwrap() calls and handle properly
-- [ ] Add `--version` flag
+- [x] Fix any panics — catch all unwrap() calls and handle properly (session 2)
+- [x] Add `--version` flag (session 2)
 
 ## Level 2: Be sensible about coding standards
 
