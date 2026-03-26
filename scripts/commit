@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Run the full test suite; on success bump Cargo.toml patch version, then git add -A, commit, push.
+# Usage: ./scripts/commit "Your commit message"
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+if [ "$#" -ne 1 ]; then
+  echo "Usage: $0 MESSAGE" >&2
+  exit 1
+fi
+
+MESSAGE="$1"
+CARGO_TOML="${ROOT}/Cargo.toml"
+
+if [ ! -f "$CARGO_TOML" ]; then
+  echo "error: Cargo.toml not found at ${CARGO_TOML}" >&2
+  exit 1
+fi
+
+echo "Running cargo test (full suite)..."
+if ! cargo test; then
+  echo "error: tests failed. Fix failures before committing." >&2
+  echo "error: no version bump and no git commands were run." >&2
+  exit 1
+fi
+
+current=$(grep -E '^version[[:space:]]*=[[:space:]]*"' "$CARGO_TOML" | head -1 | sed -E 's/^version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/')
+if [ -z "$current" ]; then
+  echo "error: could not read version from Cargo.toml" >&2
+  exit 1
+fi
+
+new_version=$(echo "$current" | awk -F. '{$NF = $NF + 1; OFS = "."; print}')
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+sed "s/^version = \".*\"/version = \"${new_version}\"/" "$CARGO_TOML" >"$tmp"
+mv "$tmp" "$CARGO_TOML"
+trap - EXIT
+
+echo "Bump version: ${current} -> ${new_version}"
+
+git add -A
+git commit -m "$MESSAGE"
+git push

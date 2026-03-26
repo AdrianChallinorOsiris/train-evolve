@@ -1,4 +1,4 @@
-//! Static model railway layout: tracks, sensors, points, stations, and validation.
+//! Static model railway layout (v2): route graphs with connections, nested points, validation.
 //!
 //! Load from [`TrackLayout::from_toml_str`] or [`TrackLayout::from_path`], then call
 //! [`TrackLayout::validate`] before using the layout for routing.
@@ -11,7 +11,7 @@ mod validate;
 pub use ids::{PointId, SensorId, TrackId};
 pub use load::LoadError;
 pub use model::{
-    ConnectionRef, PointDef, PointLegRole, Station, TrackElement, TrackEnd, TrackLayout,
-    TrackSegment, TrackSide,
+    ConnectionRef, CouplerDef, CouplerLegRole, CouplerSide, PointLeg, PointLegRole, RouteNode,
+    Station, TrackLayout, TrackSegment, TrackSide,
 };
 pub use validate::LayoutError;

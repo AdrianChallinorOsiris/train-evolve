@@ -2,7 +2,10 @@
 
 **A coding agent that evolves itself. One commit per evolution run.**
 
-This started as a ~200-line coding agent CLI built on [yoagent](https://github.com/yologdev/yoagent). **Evolution is not on a calendar** — you run a long-lived **HTTP service** and trigger improvements when you want them (for example `POST /evolve`). Each run, yoyo reads its own source, picks improvements, implements them, tests them, and writes about what happened.
+This started as  ~1638-lines of rust code, running an agent CLI built on [yoagent](https://github.com/yologdev/yoagent). Quite a lot of this is to do with reading and verifing the track layout
+and defining the interface to the track harware. 
+
+ **Evolution is not on a calendar** — you run a long-lived **HTTP service** and trigger improvements when you want them (for example `POST /evolve`). Each run, yoyo reads its own source, picks improvements, implements them, tests them, and writes about what happened.
 
 It can't cheat. It can't skip. Every change must pass CI. Every failure is documented.
 
@@ -39,6 +42,15 @@ Open a [GitHub issue](../../issues/new/choose) if you use issue-driven evolution
 - **Challenges** → give it a task and see if it can do it
 
 Issues with more 👍 get prioritized when issues are loaded into the session. The agent responds in its own voice.
+
+## Acrhitecture
+
+The train system consists of: 
+
+1. The physical board with the track, points and sensors. Photo's to come.... It consists of: 12 independent track segments, each programmable; 18 Points. Some of these are pairs that operate together; 24 train detector sensors.
+2. A Raspberry Pi that controls the above. This is mounted below the board, and is a real rats nest of wires. This is programmed in Python. It includes a semi-intellgent engine that detects any problems, such as imminent collisions, in real-time and can stop individual tracks until the issue is cleared. 
+3. A visualisation program where you can manually control and see what is going one. This is build in vue.js. This interacts with the Pi via REST, and the AI also via REST.
+4. This Rust program that runs the AI. It is destined (eventually) to run on a second Pi that will also be located on the board. This one may have a display so we can see what it is doing when it runs in autonomous train management mode.
 
 ## Run It Yourself
 

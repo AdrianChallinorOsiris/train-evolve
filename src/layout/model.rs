@@ -1,69 +1,132 @@
-//! Serializable layout structures (match `data/track_layout.toml`).
+//! Serializable layout structures (v2; see `data/track_layout.toml`).
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-/// Which end of a track segment a connection refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Which port of a peer track a [`RouteNode::Connection`] attaches to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TrackSide {
     Fwd,
     Bwd,
 }
 
-/// End of a track: buffer stop or connection to another track.
+/// One node in an ordered route: sensors, couplers, connections, nested points, terminals.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TrackEnd {
-    Buffer,
-    Interconnect {
+pub enum RouteNode {
+    Sensor {
+        id: u8,
+    },
+    Coupler {
+        id: u8,
+    },
+    /// Global connection id; this endpoint sits on `peer_track`’s `peer_side` port.
+    Connection {
+        id: u8,
         peer_track: u8,
         peer_side: TrackSide,
     },
+    Point {
+        id: u8,
+        entry: PointLeg,
+        thru: PointLeg,
+        branch: PointLeg,
+    },
+    /// End of a spur (buffer stop).
+    Buffer,
+    /// Continuation along the same leg with no additional hop (placeholder).
+    Inline,
 }
 
-/// One element along a track in the **FWD** direction (from BWD end toward FWD end).
+/// One leg of a [`RouteNode::Point`]: ordered nodes along that leg (same vocabulary as track `along_fwd`).
 ///
-/// Points may appear between sensors, **before** the first sensor, or **after** the last sensor—
-/// any order is allowed as long as it matches physical order along the segment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum TrackElement {
-    Sensor { id: u8 },
-    Point { id: u8 },
+/// In TOML, **either** a bare array `[{ kind = "sensor", ... }, ...]` **or** `{ along_fwd = [ ... ] }`
+/// deserializes here (nested inline tables cannot nest `{ along_fwd = ... }` inside another inline
+/// `point`, so deep trees should use the bare-array form for each leg).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointLeg {
+    pub along_fwd: Vec<RouteNode>,
 }
 
-/// One segment of track with intrinsic FWD/BWD and an ordered sequence of sensors/points along FWD.
+impl<'de> Deserialize<'de> for PointLeg {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Short(Vec<RouteNode>),
+            Long { along_fwd: Vec<RouteNode> },
+        }
+        match Wire::deserialize(deserializer)? {
+            Wire::Short(along_fwd) => Ok(PointLeg { along_fwd }),
+            Wire::Long { along_fwd } => Ok(PointLeg { along_fwd }),
+        }
+    }
+}
+
+impl Serialize for PointLeg {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        #[derive(Serialize)]
+        struct Wrap<'a> {
+            along_fwd: &'a [RouteNode],
+        }
+        Wrap {
+            along_fwd: &self.along_fwd,
+        }
+        .serialize(serializer)
+    }
+}
+
+/// One segment of track: ordered spine from BWD toward FWD.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackSegment {
     pub id: u8,
-    /// Ordered sequence along **FWD** travel (BWD end → FWD end). Mix `sensor` and `point` in
-    /// order; points may be before the first sensor, between sensors, or after the last sensor.
-    pub along_fwd: Vec<TrackElement>,
-    pub fwd_end: TrackEnd,
-    pub bwd_end: TrackEnd,
-    /// When true, this segment reverses travel direction (FWD in → BWD out to another track).
-    pub reverses_direction: bool,
+    pub along_fwd: Vec<RouteNode>,
 }
 
 impl TrackSegment {
-    /// Sensor ids on this segment in FWD order (subset of `along_fwd`).
-    pub fn sensors_along_fwd(&self) -> impl Iterator<Item = u8> + '_ {
-        self.along_fwd.iter().filter_map(|e| match e {
-            TrackElement::Sensor { id } => Some(*id),
-            TrackElement::Point { .. } => None,
-        })
-    }
-
-    /// Point ids on this segment in FWD order (subset of `along_fwd`).
-    pub fn points_along_fwd(&self) -> impl Iterator<Item = u8> + '_ {
-        self.along_fwd.iter().filter_map(|e| match e {
-            TrackElement::Point { id } => Some(*id),
-            TrackElement::Sensor { .. } => None,
-        })
+    /// Sensor ids in preorder walk of `along_fwd` (not deduplicated).
+    pub fn sensors_in_route(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for n in &self.along_fwd {
+            collect_sensors(n, &mut out);
+        }
+        out
     }
 }
 
-/// Role of a leg when connecting to another point.
+fn collect_sensors(node: &RouteNode, out: &mut Vec<u8>) {
+    match node {
+        RouteNode::Sensor { id } => out.push(*id),
+        RouteNode::Point {
+            entry,
+            thru,
+            branch,
+            ..
+        } => {
+            for n in &entry.along_fwd {
+                collect_sensors(n, out);
+            }
+            for n in &thru.along_fwd {
+                collect_sensors(n, out);
+            }
+            for n in &branch.along_fwd {
+                collect_sensors(n, out);
+            }
+        }
+        RouteNode::Coupler { .. }
+        | RouteNode::Connection { .. }
+        | RouteNode::Buffer
+        | RouteNode::Inline => {}
+    }
+}
+
+/// Role of a leg when connecting to an independent point in legacy `ConnectionRef` (couplers only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PointLegRole {
@@ -72,60 +135,61 @@ pub enum PointLegRole {
     Branch,
 }
 
-/// Connection target for point legs: a track port or another point’s leg.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CouplerSide {
+    A,
+    B,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CouplerLegRole {
+    Entry,
+    Thru,
+}
+
+/// Used only by [`CouplerDef`] to name physical legs (track port or another coupler’s straight leg).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConnectionRef {
-    TrackPort { track: u8, side: TrackSide },
-    PointLeg { point: u8, leg: PointLegRole },
+    TrackPort {
+        track: u8,
+        side: TrackSide,
+    },
+    CouplerLeg {
+        coupler: u8,
+        side: CouplerSide,
+        leg: CouplerLegRole,
+    },
 }
 
-/// A station groups one or more sensors (possibly on different tracks).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Station {
     pub name: String,
     pub sensor_ids: Vec<u8>,
 }
 
-/// Point definition: independent switch or a coupled pair sharing one point number.
+/// Two fused turnouts sharing one motor id (four straight legs; branches fused internally).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "coupling", rename_all = "snake_case")]
-pub enum PointDef {
-    Independent {
-        id: u8,
-        entry: ConnectionRef,
-        thru: ConnectionRef,
-        branch: ConnectionRef,
-    },
-    Coupled {
-        id: u8,
-        entry_a: ConnectionRef,
-        thru_a: ConnectionRef,
-        branch_a: ConnectionRef,
-        entry_b: ConnectionRef,
-        thru_b: ConnectionRef,
-        branch_b: ConnectionRef,
-    },
-}
-
-impl PointDef {
-    pub fn id(&self) -> u8 {
-        match self {
-            PointDef::Independent { id, .. } | PointDef::Coupled { id, .. } => *id,
-        }
-    }
+pub struct CouplerDef {
+    pub id: u8,
+    pub entry_a: ConnectionRef,
+    pub thru_a: ConnectionRef,
+    pub entry_b: ConnectionRef,
+    pub thru_b: ConnectionRef,
 }
 
 /// Root document for `track_layout.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackLayout {
+    /// Must be `2` for the connection-based route model.
     pub version: u32,
     pub tracks: Vec<TrackSegment>,
     #[serde(default)]
-    pub points: Vec<PointDef>,
+    pub couplers: Vec<CouplerDef>,
     #[serde(default)]
     pub stations: Vec<Station>,
-    /// Free-form notes for humans (optional).
     #[serde(default)]
     pub notes: Option<String>,
 }

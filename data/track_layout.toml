@@ -1,37 +1,167 @@
-# Canonical static layout for the model railway (edit to match your hardware).
-# See docs/TRACK_LAYOUT.md for field meanings and invariants.
+# Canonical static layout for the model railway (v2 route graph).
+# See docs/TRACK_LAYOUT.md and docs/TRACK_LAYOUT_DIAGRAM.md (schematic legend).
+# Point legs: entry/thru/branch = bare [...] arrays (PointLeg). Inline tables must be one line.
 
-version = 1
+version = 2
+
+# --- Tracks 1-2 Outer loop ------------------------------------------
 
 [[tracks]]
 id = 1
 along_fwd = [
+  { kind = "connection", id = 1, peer_track = 2, peer_side = "fwd" },
   { kind = "sensor", id = 1 },
   { kind = "sensor", id = 2 },
   { kind = "sensor", id = 3 },
+  { kind = "connection", id = 2, peer_track = 2, peer_side = "bwd" },
 ]
-reverses_direction = true
-fwd_end = { kind = "interconnect", peer_track = 2, peer_side = "bwd" }
-bwd_end = { kind = "interconnect", peer_track = 2, peer_side = "fwd" }
 
 [[tracks]]
 id = 2
-# along_fwd: FWD order (BWD end → FWD end). Points may be before the first sensor,
-# between sensors, or after the last sensor — see docs/TRACK_LAYOUT.md.
-# Example: point 1 between sensors 4 and 5.
 along_fwd = [
+  { kind = "connection", id = 2, peer_track = 1, peer_side = "fwd" },
   { kind = "sensor", id = 4 },
-  { kind = "point", id = 1 },
+  { kind = "coupler", id = 1 },
+  { kind = "coupler", id = 3 },
   { kind = "sensor", id = 5 },
+  { kind = "connection", id = 1, peer_track = 1, peer_side = "bwd" },
 ]
-reverses_direction = false
-fwd_end = { kind = "interconnect", peer_track = 1, peer_side = "bwd" }
-bwd_end = { kind = "interconnect", peer_track = 1, peer_side = "fwd" }
 
-# Placeholder geometry for point 1 — replace legs with real topology when you refine the layout.
-[[points]]
-coupling = "independent"
+# --- Tracks 3-4 Middle loop -------------------------------------------
+
+[[tracks]]
+id = 3
+along_fwd = [
+  { kind = "connection", id = 3, peer_track = 4, peer_side = "fwd" },
+  { kind = "sensor", id = 6 },
+  { kind = "sensor", id = 7 },
+  { kind = "sensor", id = 8 },
+  { kind = "point", id = 5, entry = [{ kind = "inline" }], thru = [{ kind = "coupler", id = 1 }, { kind = "connection", id = 4, peer_track = 4, peer_side = "bwd" }], branch = [{ kind = "point", id = 13, entry = [{ kind = "inline" }], thru = [{ kind = "connection", id = 5, peer_track = 12, peer_side = "fwd" }], branch = [{ kind = "connection", id = 6, peer_track = 9, peer_side = "fwd" }] }] },
+]
+
+[[tracks]]
+id = 4
+along_fwd = [
+  { kind = "connection", id = 4, peer_track = 3, peer_side = "bwd" },
+  { kind = "coupler", id = 2 },
+  { kind = "coupler", id = 3 },
+  { kind = "coupler", id = 4 },
+  { kind = "sensor", id = 9 },
+  { kind = "connection", id = 3, peer_track = 3, peer_side = "fwd" },
+]
+
+# --- Tracks 5-8 Inner loop (T8: point 9 first at BWD; thru→T7; entry leg has 13–14 then T6; branch→T10) -----------------
+
+[[tracks]]
+id = 5
+along_fwd = [
+    { kind = "connection", id = 7, peer_track = 6, peer_side = "fwd" },
+    { kind = "sensor", id = 10 },
+    { kind = "sensor", id = 11 },
+    { kind = "point", id = 6, entry = [{ kind = "inline" }], thru = [{ kind = "connection", id = 8, peer_track = 7, peer_side = "bwd" }], branch = [{ kind = "point", id = 7, entry = [{ kind = "inline" }], thru = [{ kind = "connection", id = 9, peer_track = 9, peer_side = "bwd" }], branch = [{ kind = "point", id = 8, entry = [{ kind = "inline" }], thru = [{ kind = "connection", id = 10, peer_track = 10, peer_side = "bwd" }], branch = [{ kind = "connection", id = 11, peer_track = 11, peer_side = "bwd" }] }] }] },
+]
+
+[[tracks]]
+id = 6
+along_fwd = [
+  { kind = "connection", id = 13, peer_track = 8, peer_side = "fwd" },
+  { kind = "sensor", id = 15 },
+  { kind = "coupler", id = 3 },
+  { kind = "sensor", id = 16 },
+  { kind = "coupler", id = 4 },
+  { kind = "connection", id = 7, peer_track = 8, peer_side = "bwd" },
+]
+
+[[tracks]]
+id = 7
+along_fwd = [
+  { kind = "connection", id = 8, peer_track = 5, peer_side = "fwd" },
+  { kind = "sensor", id = 12 },
+  { kind = "connection", id = 12, peer_track = 8, peer_side = "bwd" },
+]
+
+# Track 8: BWD end is point 9 (thru leg faces BWD toward T7). Sensors 13–14 sit on the entry leg toward T6 (see v1 track_layout.old).
+[[tracks]]
+id = 8
+along_fwd = [
+  { kind = "point", id = 9, entry = [{ kind = "sensor", id = 13 }, { kind = "sensor", id = 14 }, { kind = "connection", id = 13, peer_track = 6, peer_side = "bwd" }], thru = [{ kind = "connection", id = 12, peer_track = 7, peer_side = "fwd" }], branch = [{ kind = "connection", id = 11, peer_track = 10, peer_side = "fwd" }] },
+]
+
+# --- Remaining segments -----------------------------------------------------
+
+[[tracks]]
+id = 9
+along_fwd = [
+  { kind = "connection", id = 9, peer_track = 5, peer_side = "fwd" },
+  { kind = "sensor", id = 24 },
+  { kind = "connection", id = 6, peer_track = 3, peer_side = "fwd" },
+]
+
+[[tracks]]
+id = 10
+along_fwd = [
+  { kind = "connection", id = 10, peer_track = 5, peer_side = "fwd" },
+  { kind = "sensor", id = 17 },
+  { kind = "connection", id = 11, peer_track = 8, peer_side = "bwd" },
+]
+
+[[tracks]]
+id = 11
+along_fwd = [
+  { kind = "connection", id = 11, peer_track = 5, peer_side = "fwd" },
+  { kind = "point", id = 10, entry = [{ kind = "inline" }], thru = [{ kind = "point", id = 12, entry = [{ kind = "inline" }], thru = [{ kind = "sensor", id = 20 }, { kind = "buffer" }], branch = [{ kind = "sensor", id = 21 }, { kind = "buffer" }] }], branch = [{ kind = "point", id = 11, entry = [{ kind = "inline" }], thru = [{ kind = "sensor", id = 19 }, { kind = "buffer" }], branch = [{ kind = "sensor", id = 18 }, { kind = "buffer" }] }] },
+]
+
+[[tracks]]
+id = 12
+along_fwd = [
+  { kind = "connection", id = 5, peer_track = 3, peer_side = "fwd" },
+  { kind = "sensor", id = 23 },
+  { kind = "buffer" },
+]
+
+# --- Couplers (hardware metadata) -------------------------------------------
+
+[[couplers]]
 id = 1
-entry = { type = "track_port", track = 2, side = "bwd" }
-thru = { type = "track_port", track = 2, side = "fwd" }
-branch = { type = "track_port", track = 1, side = "bwd" }
+entry_a = { type = "track_port", track = 1, side = "bwd" }
+thru_a = { type = "track_port", track = 1, side = "bwd" }
+entry_b = { type = "track_port", track = 3, side = "fwd" }
+thru_b = { type = "track_port", track = 4, side = "bwd" }
+
+[[couplers]]
+id = 2
+entry_a = { type = "track_port", track = 4, side = "bwd" }
+thru_a = { type = "track_port", track = 4, side = "bwd" }
+entry_b = { type = "track_port", track = 6, side = "fwd" }
+thru_b = { type = "track_port", track = 6, side = "bwd" }
+
+[[couplers]]
+id = 3
+entry_a = { type = "track_port", track = 2, side = "fwd" }
+thru_a = { type = "track_port", track = 2, side = "fwd" }
+entry_b = { type = "track_port", track = 4, side = "fwd" }
+thru_b = { type = "track_port", track = 4, side = "fwd" }
+
+[[couplers]]
+id = 4
+entry_a = { type = "track_port", track = 4, side = "fwd" }
+thru_a = { type = "track_port", track = 4, side = "fwd" }
+entry_b = { type = "track_port", track = 6, side = "fwd" }
+thru_b = { type = "track_port", track = 6, side = "fwd" }
+
+[[stations]]
+name = "sidings"
+sensor_ids = [18, 19, 20, 21]
+
+[[stations]]
+name = "blackheath"
+sensor_ids = [24]
+
+[[stations]]
+name = "waterloo"
+sensor_ids = [2, 7, 12, 17]
+
+[[stations]]
+name = "bridge"
+sensor_ids = [5, 9, 16]

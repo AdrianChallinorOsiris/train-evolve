@@ -2,106 +2,108 @@
 
 This document describes the **static model railway layout** consumed by the `yoyo` crate (`yoyo::layout`). The canonical file is **[`data/track_layout.toml`](../data/track_layout.toml)**. Edit that file to match your hardware; the Rust types in [`src/layout/model.rs`](../src/layout/model.rs) must stay in sync.
 
+The **visual schematic legend** (colours = tracks, squares / circles / diamonds = track / sensor / point ids) is in **[`TRACK_LAYOUT_DIAGRAM.md`](TRACK_LAYOUT_DIAGRAM.md)**. Connection ids are editor-only in TOML and are not shown on the diagram.
+
+The previous **v1** format (separate `fwd_end` / `bwd_end` and `[[points]]` table) is kept only as a snapshot in **[`data/track_layout.old`](../data/track_layout.old)** for reference.
+
 **Workflow:** edit TOML → run `cargo test` (parsing + validation tests) → commit.
 
 ---
 
-## File format
+## File format (v2)
 
-- **Root:** `version` (must be `1`), `tracks`, optional `points`, optional `stations`, optional `notes`.
-- **Encoding:** TOML. Nested structs often use **inline tables**, e.g. `fwd_end = { kind = "buffer" }`.
+- **Root:** `version` (must be `2`), `tracks`, optional `[[couplers]]`, optional `stations`, optional `notes`.
+- **No** top-level `[[points]]` table: turnouts are **embedded** in each track’s route as `RouteNode::Point` values with nested `entry` / `thru` / `branch` legs.
+- **Encoding:** TOML. **Important:** standard TOML **inline tables** `{ ... }` cannot contain line breaks. Complex `point` nodes must be written as **one line** per inline table (or use only single-line `{ kind = "...", ... }` entries inside arrays).
+- **Point legs (`PointLeg`):** In Rust, each leg stores an `along_fwd` list (same node types as a track). In TOML you may write **either** a **bare array** `entry = [{ kind = "inline" }, …]` **or** `entry = { along_fwd = [ … ] }`. For **deep** nesting, prefer **bare arrays** for each leg so you do not nest `{ along_fwd = … }` inside another inline `point` (invalid TOML).
 
 ---
 
 ## Identifiers and ranges
 
 | Concept | Range | Notes |
-|--------|-------|--------|
+|--------|-------|-------|
 | Track id | 1–12 | Unique across `[[tracks]]`. |
-| Sensor id | 1–24 | **Globally unique**: each sensor appears in **exactly one** `along_fwd` entry in **one** track. |
-| Point id | 1–13 | Unique across the `points` list (one row per logical point). |
+| Sensor id | 1–24 | **Globally unique**: each sensor appears in **exactly one** `sensor` node somewhere in the layout tree. |
+| Point id | 1–13 | Unique across **all** `point` nodes (any nesting depth) on a **single** track’s route tree; the same id must not appear twice on the same track. |
+| Coupler id | 1–13 | Unique across `[[couplers]]`. **Must not** reuse an id that appears as a **point** id anywhere in the layout. |
+| Connection id | 1–255 (u8) | **Globally paired**: each id must appear on **exactly two** endpoints on **two** tracks, with reciprocal `peer_track` / `peer_side` (see below). |
 
 ---
 
 ## Tracks (`TrackSegment`)
 
-Each **track** is a powered segment with a fixed intrinsic **FWD** and **BWD** direction (your physical convention).
+Each **track** is a powered segment with intrinsic **FWD** and **BWD** ends (your physical convention).
 
-- **`along_fwd`** — Ordered list of **sensors and points** along the segment in the **FWD** direction (from the **BWD** end toward the **FWD** end). List every `sensor` and `point` that sits on this segment in travel order. A point may sit **between** two sensors, **before** the first sensor (toward the BWD end), or **after** the last sensor (toward the FWD end)—there is no requirement that sensors come first or last.
+- **`along_fwd`** — Ordered list of [`RouteNode`](#route-nodes) values from the **BWD** end toward the **FWD** end: sensors, couplers, **`connection`** hops to other tracks, nested **`point`** junctions, **`buffer`**, **`inline`**, etc.
 
-Between two sensors:
+There are **no** separate `fwd_end` / `bwd_end` fields: track-to-track links are **`connection`** nodes placed in order inside `along_fwd`.
 
-```toml
-along_fwd = [
-  { kind = "sensor", id = 4 },
-  { kind = "point", id = 1 },
-  { kind = "point", id = 2 },
-  { kind = "sensor", id = 5 },
-]
-```
+### `RouteNode` variants
 
-Point before any sensor (toward BWD):
+| `kind` | Meaning |
+|--------|--------|
+| `sensor` | Occupancy sensor `id`. |
+| `coupler` | Hardware coupler `id` (must exist in `[[couplers]]`). |
+| `connection` | Endpoint of a **global** link: `id`, `peer_track`, `peer_side` (`fwd` or `bwd` — which port of the **peer** track this end plugs into). |
+| `point` | Turnout: `id`, `entry`, `thru`, `branch` — each leg is a [`PointLeg`](#point-legs) (same `along_fwd` vocabulary as a track). |
+| `buffer` | Buffer stop / end of line on that leg. |
+| `inline` | No-op continuation (placeholder on a leg). |
 
-```toml
-along_fwd = [
-  { kind = "point", id = 1 },
-  { kind = "sensor", id = 4 },
-  { kind = "sensor", id = 5 },
-]
-```
-
-Point after the last sensor (toward FWD):
+Example (shortened; inline tables kept on one line in real files):
 
 ```toml
 along_fwd = [
+  { kind = "connection", id = 1, peer_track = 2, peer_side = "bwd" },
   { kind = "sensor", id = 4 },
-  { kind = "sensor", id = 5 },
-  { kind = "point", id = 1 },
+  { kind = "point", id = 5, entry = [{ kind = "inline" }], thru = [{ kind = "coupler", id = 1 }], branch = [{ kind = "buffer" }] },
 ]
 ```
 
-A segment may list **only** sensors, **only** points, or any mix. The same point id must not appear twice on the same track’s `along_fwd`; it may appear on **another** track if your junction model needs it.
+### Point legs
 
-- **`fwd_end` / `bwd_end`** — Either a **buffer** (end of line) or an **interconnect** to another track’s end.
-- **`reverses_direction`** — Exactly **one** track in the layout must have this set to `true`: the **direction reverser** (train enters one way and leaves on another track with opposite sense). Validation enforces a count of **1**.
+Each of `entry`, `thru`, and `branch` is a **`PointLeg`**: a sequence of route nodes. In TOML, **either**:
 
-### Interconnects (reciprocity)
+- `thru = [{ kind = "sensor", id = 4 }, { kind = "buffer" }]` (bare array — recommended for nested trees), or
+- `entry = { along_fwd = [{ kind = "inline" }] }` (explicit `along_fwd` field).
 
-An interconnect from track **A**’s **FWD** end to track **B**’s **BWD** end looks like:
+Both deserialize to the same `PointLeg { along_fwd: [...] }` in Rust.
 
-```toml
-# On track A
-fwd_end = { kind = "interconnect", peer_track = 2, peer_side = "bwd" }
+### Connections (reciprocity)
 
-# On track B (must agree)
-bwd_end = { kind = "interconnect", peer_track = 1, peer_side = "fwd" }
-```
-
-Validation checks that each interconnect **points back** to the correct track and side. If you only edit one side, validation fails with `InterconnectMismatch`.
+Each **connection id** identifies **one** hop between two tracks and must have **exactly two distinct endpoints** (one on each track), with reciprocal `peer_track` references. If track **A** has `{ kind = "connection", id = N, peer_track = B, peer_side = "bwd" }`, then track **B** must contain the paired endpoint `{ kind = "connection", id = N, peer_track = A, peer_side = "<the side of A that N attaches to>" }`. The same id may appear **more than twice** in the route tree if you repeat the same hop (e.g. duplicate subtrees); validation **merges identical** `(track, peer_track, peer_side)` endpoints before checking the pair rule.
 
 ---
 
-## Points (`PointDef`)
+## Couplers (`CouplerDef`)
 
-Points (switches) are **degree-3** junctions: **Entry**, **Thru**, and **Branch** legs. Each leg is a [`ConnectionRef`](#connectionref).
+Unchanged from v1: a **coupler** models two physical turnouts sharing one motor id — four straight legs `entry_a`, `thru_a`, `entry_b`, `thru_b`. Each leg is still a [`ConnectionRef`](#connectionref) (`track_port` or `coupler_leg`).
 
-**Coupling** (two physical motors sharing one number):
+```toml
+[[couplers]]
+id = 1
+entry_a = { type = "track_port", track = 1, side = "bwd" }
+thru_a = { type = "track_port", track = 1, side = "bwd" }
+entry_b = { type = "track_port", track = 3, side = "fwd" }
+thru_b = { type = "track_port", track = 4, side = "bwd" }
+```
 
-- **`independent`** — One switch, one set of three legs.
-- **`coupled`** — One logical point id with **two** sets of legs (`entry_a` / `thru_a` / `branch_a` and `entry_b` / …). Both move together when the hardware commands that point id.
+List couplers on routes with `{ kind = "coupler", id = N }` inside `along_fwd` or inside a `point` leg wherever that hardware sits.
 
-### `ConnectionRef`
+---
 
-- **`track_port`** — End of a track: `track` + `side` (`fwd` or `bwd`). The `track` id must exist in `[[tracks]]`.
-- **`point_leg`** — Connect to another point’s leg: `point` id + `leg` (`entry`, `thru`, or `branch`).
+## `ConnectionRef`
 
-Use `point_leg` when the graph needs to chain through multiple points. Referenced point ids must exist in `points`.
+Used **only** inside `[[couplers]]` (not for `connection` route nodes).
+
+- **`track_port`** — `track` + `side` (`fwd` or `bwd`). The `track` id must exist in `[[tracks]]`.
+- **`coupler_leg`** — `coupler` id + `side` (`a` or `b`) + `leg` (`entry` or `thru`).
 
 ---
 
 ## Stations
 
-Each **station** has a display **`name`** and a list of **`sensor_ids`**. A station that spans multiple tracks lists **all** sensors that belong to it; every id must appear on **some** track’s `along_fwd` as a `sensor` entry.
+Each **station** has a display **`name`** and **`sensor_ids`**. Every listed id must appear as a `sensor` somewhere in the layout and must be in range **1–24**.
 
 ---
 
@@ -109,15 +111,14 @@ Each **station** has a display **`name`** and a list of **`sensor_ids`**. A stat
 
 The crate runs these checks (see `TrackLayout::validate`):
 
-- `version == 1`
-- At least one track
-- Track ids unique and in range
-- Sensor ids in range, globally unique across all `along_fwd`
-- Point ids in `along_fwd` in range, not duplicated on the same track, and each references a defined `[[points]]` row
-- Exactly one `reverses_direction == true`
-- Point ids unique and in range in `points`; connection refs valid
-- Interconnect reciprocity
-- Station sensors exist on some track
+- `version == 2`
+- At least one track; track ids unique and in range
+- Sensor ids in range, globally unique across the whole route forest
+- Point / coupler ids in range; no duplicate point (or coupler) id on the same track’s tree; coupler ids must appear in `[[couplers]]`
+- No id used as both a point and a coupler on the layout
+- Every `connection` id: exactly **two** endpoints, reciprocal peers, `peer_track` exists
+- `[[couplers]]` `ConnectionRef` targets valid
+- Station sensors exist on the layout
 
 ---
 
@@ -126,11 +127,10 @@ The crate runs these checks (see `TrackLayout::validate`):
 When you start building routers (see `ROADMAP.md`):
 
 - [ ] Every real track 1–12 you use is present (or explicitly omitted only if unused).
-- [ ] Every sensor 1–24 you use appears exactly once in some `along_fwd` as a `sensor`.
-- [ ] `along_fwd` order matches physical order along FWD for sensors and points.
-- [ ] All interconnects are reciprocal.
-- [ ] The single reverser track matches the physical reversing loop.
-- [ ] All points are `independent` or `coupled` as per hardware.
+- [ ] Every sensor you rely on appears exactly once as a `sensor` node.
+- [ ] `along_fwd` order matches physical order along the segment for sensors, couplers, and connections.
+- [ ] Every `connection` id is paired and reciprocal.
+- [ ] Couplers match hardware numbering; `coupler_leg` uses the correct `side` and `leg`.
 - [ ] Stations list every platform/stopping sensor you care about.
 
 ---
@@ -139,7 +139,7 @@ When you start building routers (see `ROADMAP.md`):
 
 - Load: `TrackLayout::from_toml_str`, `TrackLayout::from_path`
 - Validate: `TrackLayout::validate() -> Result<(), LayoutError>`
-- Types: `yoyo::layout::{TrackLayout, TrackSegment, TrackElement, TrackEnd, PointDef, Station, ConnectionRef, …}`
-- Helpers: `TrackSegment::sensors_along_fwd()`, `TrackSegment::points_along_fwd()` — iterators over ids in order along FWD.
+- Types: `yoyo::layout::{TrackLayout, TrackSegment, RouteNode, PointLeg, TrackSide, CouplerDef, CouplerSide, CouplerLegRole, Station, ConnectionRef, …}`
+- Helper: `TrackSegment::sensors_in_route()` — preorder sensor ids along the segment’s top-level `along_fwd` (including nested `point` subtrees).
 
-Future work (not in this framework): build a **navigation graph** or pathfinder on top of this model for autonomous routing.
+Future work: build a **navigation graph** or pathfinder on top of this model for autonomous routing.
