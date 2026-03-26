@@ -293,8 +293,22 @@ async fn main() {
         let mut rx = agent.prompt(input).await;
         let mut last_usage = Usage::default();
         let mut in_text = false;
+        let mut cancelled = false;
 
-        while let Some(event) = rx.recv().await {
+        loop {
+            let event = tokio::select! {
+                ev = rx.recv() => match ev {
+                    Some(e) => e,
+                    None => break,
+                },
+                _ = tokio::signal::ctrl_c() => {
+                    agent.abort();
+                    cancelled = true;
+                    // drain remaining events
+                    while rx.recv().await.is_some() {}
+                    break;
+                }
+            };
             match event {
                 AgentEvent::ToolExecutionStart {
                     tool_name, args, ..
@@ -386,6 +400,9 @@ async fn main() {
 
         if in_text {
             println!();
+        }
+        if cancelled {
+            println!("\n{YELLOW}  ⚠ interrupted{RESET}");
         }
         print_usage(&last_usage);
         println!();
