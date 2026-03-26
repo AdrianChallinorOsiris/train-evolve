@@ -245,7 +245,8 @@ async fn main() {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "(unknown)".into());
-    println!("{DIM}  cwd:   {cwd}{RESET}\n");
+    println!("{DIM}  cwd:   {cwd}{RESET}");
+    println!("{DIM}  type /help for commands{RESET}\n");
 
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
@@ -266,6 +267,17 @@ async fn main() {
 
         match input {
             "/quit" | "/exit" => break,
+            "/help" => {
+                println!("\n{BOLD}  Commands:{RESET}");
+                println!("  {GREEN}/help{RESET}          Show this help");
+                println!("  {GREEN}/clear{RESET}         Clear conversation history");
+                println!("  {GREEN}/model <name>{RESET}  Switch model (clears conversation)");
+                println!("  {GREEN}/quit{RESET}          Exit");
+                println!();
+                println!("  {DIM}Ctrl+C during a response cancels the current turn.{RESET}");
+                println!("  {DIM}Anything else is sent as a message to the agent.{RESET}\n");
+                continue;
+            }
             "/clear" => {
                 agent = Agent::new(AnthropicProvider)
                     .with_system_prompt(SYSTEM_PROMPT)
