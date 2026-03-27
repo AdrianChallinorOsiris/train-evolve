@@ -32,6 +32,9 @@ pub struct InitialiseRequest {
 pub struct TrainPosition {
     /// Which sensor currently detects this train (1–24).
     pub sensor: u8,
+    /// Target sensor for this train (optional; used by route planner).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destination: Option<u8>,
 }
 
 #[derive(Debug, Error)]
@@ -54,6 +57,11 @@ impl InitialiseRequest {
         for t in &self.trains {
             if !(1..=24).contains(&t.sensor) {
                 return Err(StateError::InvalidSensor(t.sensor));
+            }
+            if let Some(d) = t.destination {
+                if !(1..=24).contains(&d) {
+                    return Err(StateError::InvalidSensor(d));
+                }
             }
         }
         Ok(())
@@ -92,11 +100,18 @@ pub fn save_program_placeholder(value: &serde_json::Value) -> Result<(), StateEr
 mod tests {
     use super::*;
 
+    fn tp(sensor: u8) -> TrainPosition {
+        TrainPosition {
+            sensor,
+            destination: None,
+        }
+    }
+
     #[test]
     fn validate_max_trains() {
         let mut trains = vec![];
         for _ in 0..7 {
-            trains.push(TrainPosition { sensor: 1 });
+            trains.push(tp(1));
         }
         let req = InitialiseRequest { trains };
         assert!(req.validate().is_err());
@@ -105,11 +120,7 @@ mod tests {
     #[test]
     fn validate_ok_trains() {
         let req = InitialiseRequest {
-            trains: vec![
-                TrainPosition { sensor: 1 },
-                TrainPosition { sensor: 12 },
-                TrainPosition { sensor: 24 },
-            ],
+            trains: vec![tp(1), tp(12), tp(24)],
         };
         assert!(req.validate().is_ok());
     }
@@ -117,7 +128,7 @@ mod tests {
     #[test]
     fn validate_invalid_sensor_zero() {
         let req = InitialiseRequest {
-            trains: vec![TrainPosition { sensor: 0 }],
+            trains: vec![tp(0)],
         };
         assert!(matches!(req.validate(), Err(StateError::InvalidSensor(0))));
     }
@@ -125,9 +136,23 @@ mod tests {
     #[test]
     fn validate_invalid_sensor_high() {
         let req = InitialiseRequest {
-            trains: vec![TrainPosition { sensor: 25 }],
+            trains: vec![tp(25)],
         };
         assert!(matches!(req.validate(), Err(StateError::InvalidSensor(25))));
+    }
+
+    #[test]
+    fn validate_invalid_destination() {
+        let req = InitialiseRequest {
+            trains: vec![TrainPosition {
+                sensor: 1,
+                destination: Some(99),
+            }],
+        };
+        assert!(matches!(
+            req.validate(),
+            Err(StateError::InvalidSensor(99))
+        ));
     }
 
     #[test]
@@ -135,7 +160,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trains.json");
         let req = InitialiseRequest {
-            trains: vec![TrainPosition { sensor: 3 }, TrainPosition { sensor: 18 }],
+            trains: vec![tp(3), tp(18)],
         };
         req.save(&path).unwrap();
         let loaded = InitialiseRequest::load(&path).unwrap().unwrap();

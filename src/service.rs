@@ -19,6 +19,7 @@ use crate::automation::AutomationController;
 use crate::automation::AutomationError;
 use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
 use crate::pi_client::{PiClient, PointDirection, TrackDirection};
+use crate::route_planner;
 use crate::state::{self, InitialiseRequest, StateError};
 
 /// Sender used by the evolve handler to tell the server loop to shut down for a restart.
@@ -45,6 +46,7 @@ pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Err
         .route("/evolve", post(evolve_handler))
         .route("/initialise", post(initialise_handler))
         .route("/program", post(program_handler))
+        .route("/route", post(route_handler))
         .route("/automatic", post(automatic_handler))
         .route("/stop", post(stop_handler))
         // Pi read-only proxies
@@ -247,6 +249,19 @@ pub fn program_json(payload: serde_json::Value) -> Result<serde_json::Value, Sta
     }))
 }
 
+/// Same as `POST /route`: compute routes for trains with destinations.
+pub fn route_json(
+    body: InitialiseRequest,
+) -> Result<serde_json::Value, route_planner::PlanError> {
+    body.validate()
+        .map_err(|e| route_planner::PlanError::Layout(e.to_string()))?;
+    let plans = route_planner::plan_routes(&body.trains)?;
+    Ok(json!({
+        "status": "ok",
+        "routes": plans,
+    }))
+}
+
 async fn health_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(state.health_json().await)
 }
@@ -335,6 +350,21 @@ async fn program_handler(
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     program_json(payload)
         .map_err(|e: StateError| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        .map(Json)
+}
+
+async fn route_handler(
+    Json(body): Json<InitialiseRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    route_json(body)
+        .map_err(|e| {
+            let code = match &e {
+                route_planner::PlanError::NoDestination { .. } => StatusCode::BAD_REQUEST,
+                route_planner::PlanError::NoRoute { .. } => StatusCode::NOT_FOUND,
+                route_planner::PlanError::Layout(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            (code, e.to_string())
+        })
         .map(Json)
 }
 

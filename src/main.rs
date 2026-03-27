@@ -39,7 +39,7 @@ use yoyo::pi_client::DEFAULT_PI_URL;
 use yoyo::pi_client::{PiClient, PointDirection, TrackDirection};
 use yoyo::prompts::SYSTEM_PROMPT;
 use yoyo::service::{
-    initialise_json, journal_response, program_json, roadmap_response, serve, AppState,
+    initialise_json, journal_response, program_json, roadmap_response, route_json, serve, AppState,
     JOURNAL_FILE, ROADMAP_FILE,
 };
 use yoyo::state::InitialiseRequest;
@@ -95,6 +95,7 @@ REPL COMMANDS:
   /evolve              Same as POST /evolve
   /initialise <json>   Same as POST /initialise (JSON on one line)
   /program <json>      Same as POST /program
+  /route <json>        Same as POST /route (compute routes for trains)
   /automatic           Same as POST /automatic
   /stop                Same as POST /stop
   /pi status|health|sensors
@@ -111,6 +112,7 @@ HTTP (--serve) ENDPOINTS:
   GET  /roadmap        Planned curriculum (ROADMAP.md)
   POST /evolve         Trigger evolution session
   POST /initialise     Set train positions
+  POST /route          Compute routes for trains with destinations
   POST /program        Upload track program
   POST /automatic      Start automatic mode
   POST /stop           Stop automatic mode
@@ -238,7 +240,7 @@ async fn main() {
             shutdown_tx: Arc::new(shutdown_tx),
         };
         eprintln!("yoyo: HTTP service on http://{bind}");
-        eprintln!("yoyo: POST /evolve /initialise /program /automatic /stop");
+        eprintln!("yoyo: POST /evolve /initialise /route /program /automatic /stop");
         eprintln!("yoyo: GET  /health /journal /roadmap /pi/status /pi/health /pi/sensors");
         eprintln!("yoyo: POST /pi/track/:id/speed /pi/track/:id/stop /pi/allstop /pi/point/:id /pi/sensor/:id /pi/sensors/reset");
         if let Err(e) = serve(bind, state).await {
@@ -383,6 +385,9 @@ async fn main() {
                     "  {GREEN}/initialise <json>{RESET}   e.g. {{\"trains\":[{{\"sensor\":3}}]}}"
                 );
                 println!("  {GREEN}/program <json>{RESET}      track program placeholder JSON");
+                println!(
+                    "  {GREEN}/route <json>{RESET}        route planner — e.g. {{\"trains\":[{{\"sensor\":1,\"destination\":5}}]}}"
+                );
                 println!("  {GREEN}/pi status{RESET}  {GREEN}/pi health{RESET}  {GREEN}/pi sensors{RESET}  …");
                 println!();
                 println!("  {DIM}Ctrl+C during a response cancels the current turn.{RESET}");
@@ -777,6 +782,21 @@ async fn repl_service_dispatch(line: &str, state: &AppState) -> bool {
                 Ok(payload) => match program_json(payload) {
                     Ok(v) => print_json_pretty(&v),
                     Err(e) => eprintln!("{RED}  program: {e}{RESET}"),
+                },
+                Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
+            }
+            true
+        }
+        s if s.starts_with("/route") => {
+            let rest = s["/route".len()..].trim();
+            if rest.is_empty() {
+                eprintln!("{RED}  usage: /route {{\"trains\":[{{\"sensor\":1,\"destination\":5}}]}}{RESET}");
+                return true;
+            }
+            match serde_json::from_str::<InitialiseRequest>(rest) {
+                Ok(body) => match route_json(body) {
+                    Ok(v) => print_json_pretty(&v),
+                    Err(e) => eprintln!("{RED}  route: {e}{RESET}"),
                 },
                 Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
             }

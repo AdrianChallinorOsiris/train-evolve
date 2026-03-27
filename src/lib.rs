@@ -8,5 +8,6 @@ pub mod evolve_session;
 pub mod layout;
 pub mod pi_client;
 pub mod prompts;
+pub mod route_planner;
 pub mod service;
 pub mod state;
