@@ -409,7 +409,10 @@ fn walk_one_node(
 /// Find all reachable "first sensors" when entering a route from the BWD (start) side.
 /// Returns `(sensor_id, point_settings_needed)` for each possible first sensor.
 /// Points create branches — both thru and branch paths are explored.
-fn first_reachable_sensors(nodes: &[RouteNode], points_so_far: &[PointSetting]) -> Vec<(u8, Vec<PointSetting>)> {
+fn first_reachable_sensors(
+    nodes: &[RouteNode],
+    points_so_far: &[PointSetting],
+) -> Vec<(u8, Vec<PointSetting>)> {
     let mut results = Vec::new();
     for node in nodes {
         match node {
@@ -417,7 +420,12 @@ fn first_reachable_sensors(nodes: &[RouteNode], points_so_far: &[PointSetting]) 
                 results.push((*id, points_so_far.to_vec()));
                 return results; // Found the first sensor; stop.
             }
-            RouteNode::Point { id, entry, thru, branch } => {
+            RouteNode::Point {
+                id,
+                entry,
+                thru,
+                branch,
+            } => {
                 // Walk entry leg first
                 let entry_results = first_reachable_sensors(&entry.along_fwd, points_so_far);
                 if !entry_results.is_empty() {
@@ -426,11 +434,17 @@ fn first_reachable_sensors(nodes: &[RouteNode], points_so_far: &[PointSetting]) 
                 }
                 // No sensor in entry leg — walk thru and branch
                 let mut thru_pts = points_so_far.to_vec();
-                thru_pts.push(PointSetting { point_id: *id, direction: PointDirection::Thru });
+                thru_pts.push(PointSetting {
+                    point_id: *id,
+                    direction: PointDirection::Thru,
+                });
                 results.extend(first_reachable_sensors(&thru.along_fwd, &thru_pts));
 
                 let mut branch_pts = points_so_far.to_vec();
-                branch_pts.push(PointSetting { point_id: *id, direction: PointDirection::Branch });
+                branch_pts.push(PointSetting {
+                    point_id: *id,
+                    direction: PointDirection::Branch,
+                });
                 results.extend(first_reachable_sensors(&branch.along_fwd, &branch_pts));
                 return results;
             }
@@ -443,7 +457,10 @@ fn first_reachable_sensors(nodes: &[RouteNode], points_so_far: &[PointSetting]) 
 
 /// Find all reachable "last sensors" when entering a route from the FWD (end) side.
 /// Walks the route in reverse.
-fn last_reachable_sensors(nodes: &[RouteNode], points_so_far: &[PointSetting]) -> Vec<(u8, Vec<PointSetting>)> {
+fn last_reachable_sensors(
+    nodes: &[RouteNode],
+    points_so_far: &[PointSetting],
+) -> Vec<(u8, Vec<PointSetting>)> {
     let mut results = Vec::new();
     for node in nodes.iter().rev() {
         match node {
@@ -451,16 +468,27 @@ fn last_reachable_sensors(nodes: &[RouteNode], points_so_far: &[PointSetting]) -
                 results.push((*id, points_so_far.to_vec()));
                 return results;
             }
-            RouteNode::Point { id, entry, thru, branch } => {
+            RouteNode::Point {
+                id,
+                entry,
+                thru,
+                branch,
+            } => {
                 // Walking backwards: entry leg is the "exit" from the FWD side perspective.
                 // We need to check thru and branch legs first (they connect to the FWD side),
                 // then the entry leg.
                 let mut thru_pts = points_so_far.to_vec();
-                thru_pts.push(PointSetting { point_id: *id, direction: PointDirection::Thru });
+                thru_pts.push(PointSetting {
+                    point_id: *id,
+                    direction: PointDirection::Thru,
+                });
                 results.extend(last_reachable_sensors(&thru.along_fwd, &thru_pts));
 
                 let mut branch_pts = points_so_far.to_vec();
-                branch_pts.push(PointSetting { point_id: *id, direction: PointDirection::Branch });
+                branch_pts.push(PointSetting {
+                    point_id: *id,
+                    direction: PointDirection::Branch,
+                });
                 results.extend(last_reachable_sensors(&branch.along_fwd, &branch_pts));
 
                 // Also check entry leg
@@ -485,12 +513,7 @@ fn build_coupler_edges(layout: &TrackLayout) -> Vec<SensorEdge> {
     // For each coupler id, collect (track_id, preceding_sensor, following_sensor, point_context).
     let mut coupler_locations: HashMap<u8, Vec<CouplerLocation>> = HashMap::new();
     for track in &layout.tracks {
-        find_coupler_locations(
-            &track.along_fwd,
-            track.id,
-            &[],
-            &mut coupler_locations,
-        );
+        find_coupler_locations(&track.along_fwd, track.id, &[], &mut coupler_locations);
     }
 
     let mut edges = Vec::new();
@@ -656,7 +679,6 @@ fn find_next_sensor_after_coupler(flat: &[FlatItem], target: &FlatItem) -> u8 {
     0
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -683,11 +705,10 @@ mod tests {
             graph.sensors.len()
         );
         // Known sensors from the layout
-        for s in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24] {
-            assert!(
-                graph.sensors.contains(&s),
-                "missing sensor {s}"
-            );
+        for s in [
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 23, 24,
+        ] {
+            assert!(graph.sensors.contains(&s), "missing sensor {s}");
         }
     }
 
@@ -868,10 +889,16 @@ along_fwd = [
         // 1→2 requires point 1 = Thru
         let route = graph.find_route(1, 2).expect("1→2");
         assert_eq!(route.hops.len(), 1);
-        assert!(route.point_settings().iter().any(|ps| ps.point_id == 1 && ps.direction == PointDirection::Thru));
+        assert!(route
+            .point_settings()
+            .iter()
+            .any(|ps| ps.point_id == 1 && ps.direction == PointDirection::Thru));
         // 1→3 requires point 1 = Branch
         let route = graph.find_route(1, 3).expect("1→3");
         assert_eq!(route.hops.len(), 1);
-        assert!(route.point_settings().iter().any(|ps| ps.point_id == 1 && ps.direction == PointDirection::Branch));
+        assert!(route
+            .point_settings()
+            .iter()
+            .any(|ps| ps.point_id == 1 && ps.direction == PointDirection::Branch));
     }
 }
