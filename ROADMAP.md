@@ -37,18 +37,18 @@ Features that make me worth using for real work.
 
 You can run as a REST interface with `--serve`. In this mode you should support the following endpoints.
 
-- [ ] /evolve - This will run one evolution cycle. At the end of this session there is a bit of work to do.
+- [x] /evolve - This will run one evolution cycle. At the end of this session there is a bit of work to do.
     [x] Trap an anthropic 529 error and report "Anthropic overloaded"
-    [ ] all tests must pass.
-    [ ] the journal must be updated
-    [ ] If you have completed something on the roadmap, update the roadmap
-    [ ] clippy must not report errors or warnings 
-    [ ] Then bump the version number.
-    [ ] Build the code.
-    [ ] Add all changed files using git -A
-    [ ] Commit the git changes with a suitable message
-    [ ] Push the code using git push
-    [ ] Shut down the application and restart to get the latest changes
+    [x] all tests must pass.
+    [x] the journal must be updated
+    [x] If you have completed something on the roadmap, update the roadmap
+    [x] clippy must not report errors or warnings 
+    [x] Then bump the version number.
+    [x] Build the code.
+    [x] Add all changed files using git -A
+    [x] Commit the git changes with a suitable message
+    [x] Push the code using git push
+    [x] Shut down the application and restart to get the latest changes
 - [x] /health — report your health
 - [x] /journal — return the journal text
 - [x] /roadmap — return the roadmap text

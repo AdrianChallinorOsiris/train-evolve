@@ -21,6 +21,9 @@ use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
 use crate::pi_client::{PiClient, PointDirection, TrackDirection};
 use crate::state::{self, InitialiseRequest, StateError};
 
+/// Sender used by the evolve handler to tell the server loop to shut down for a restart.
+pub type ShutdownSender = tokio::sync::watch::Sender<bool>;
+
 /// Shared service state (API keys and evolution config come from environment at startup).
 #[derive(Clone)]
 pub struct AppState {
@@ -28,9 +31,13 @@ pub struct AppState {
     pub evolution: EvolutionConfig,
     pub automation: Arc<AutomationController>,
     pub pi: Arc<PiClient>,
+    /// Set to `true` after a successful `/evolve` to trigger a graceful shutdown + restart.
+    pub shutdown_tx: Arc<ShutdownSender>,
 }
 
 pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Error> {
+    let shutdown_rx = state.shutdown_tx.subscribe();
+
     let app = Router::new()
         .route("/health", get(health_handler))
         .route("/journal", get(journal_handler))
@@ -54,7 +61,18 @@ pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Err
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let mut rx = shutdown_rx;
+            // Wait until the sender broadcasts `true`.
+            while !*rx.borrow_and_update() {
+                if rx.changed().await.is_err() {
+                    break;
+                }
+            }
+            eprintln!("yoyo: graceful shutdown requested (restart after evolve)");
+        })
+        .await?;
     Ok(())
 }
 
@@ -72,7 +90,9 @@ impl AppState {
     pub async fn evolve_json(&self) -> Result<serde_json::Value, EvolutionError> {
         let _guard = self.evolve_lock.lock().await;
         let out = run_evolution(&self.evolution).await?;
-        Ok(json!({
+
+        let restart = out.restart_required;
+        let json = json!({
             "status": "completed",
             "session": out.session,
             "transcript": out.transcript,
@@ -81,7 +101,21 @@ impl AppState {
                 "output": out.usage.output,
             },
             "warnings": out.warnings,
-        }))
+            "restart_required": restart,
+        });
+
+        // Signal shutdown after returning the response — the caller receives the
+        // JSON before the server begins its graceful shutdown.
+        if restart {
+            let tx = self.shutdown_tx.clone();
+            tokio::spawn(async move {
+                // Small delay so the HTTP response finishes flushing.
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                let _ = tx.send(true);
+            });
+        }
+
+        Ok(json)
     }
 
     /// Same as `POST /automatic`.

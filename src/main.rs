@@ -229,11 +229,13 @@ async fn main() {
         };
         let pi_url =
             std::env::var("PI_URL").unwrap_or_else(|_| yoyo::pi_client::DEFAULT_PI_URL.to_string());
+        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
         let state = AppState {
             evolve_lock: Arc::new(Mutex::new(())),
             evolution,
             automation: Arc::new(AutomationController::new()),
             pi: Arc::new(PiClient::new(&pi_url)),
+            shutdown_tx: Arc::new(shutdown_tx),
         };
         eprintln!("yoyo: HTTP service on http://{bind}");
         eprintln!("yoyo: POST /evolve /initialise /program /automatic /stop");
@@ -243,7 +245,9 @@ async fn main() {
             eprintln!("yoyo: server error: {e}");
             std::process::exit(1);
         }
-        return;
+        // If we get here, the server shut down (e.g. after evolve requested restart).
+        eprintln!("yoyo: server stopped — restart the process to pick up new code");
+        std::process::exit(0);
     }
 
     // Default to REPL mode (also handles explicit --repl)
@@ -312,6 +316,7 @@ async fn main() {
         skill_dirs.clone()
     };
     let pi_url = std::env::var("PI_URL").unwrap_or_else(|_| DEFAULT_PI_URL.to_string());
+    let (repl_shutdown_tx, _repl_shutdown_rx) = tokio::sync::watch::channel(false);
     let mut repl_state = AppState {
         evolve_lock: Arc::new(Mutex::new(())),
         evolution: EvolutionConfig {
@@ -321,6 +326,7 @@ async fn main() {
         },
         automation: Arc::new(AutomationController::new()),
         pi: Arc::new(PiClient::new(&pi_url)),
+        shutdown_tx: Arc::new(repl_shutdown_tx),
     };
 
     print_banner();

@@ -30,6 +30,8 @@ pub struct EvolutionOutcome {
     pub transcript: String,
     pub usage: Usage,
     pub warnings: Vec<String>,
+    /// When true, the binary was rebuilt and the caller should restart the process.
+    pub restart_required: bool,
 }
 
 #[derive(Debug, Error)]
@@ -87,6 +89,64 @@ fn cargo_build_test() -> Result<(), String> {
     Ok(())
 }
 
+/// Run `cargo clippy --all-targets -- -D warnings`.
+fn cargo_clippy() -> Result<(), String> {
+    let status = Command::new("cargo")
+        .args(["clippy", "--all-targets", "--", "-D", "warnings"])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("cargo clippy reported errors or warnings".into());
+    }
+    Ok(())
+}
+
+/// Bump the patch (third) component of `version` in the given `Cargo.toml`.
+///
+/// Returns the new version string, or an error if the file couldn't be read/written.
+fn bump_version_in(path: &Path) -> Result<String, String> {
+    let cargo_toml = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut new_lines = Vec::new();
+    let mut new_version = String::new();
+    for line in cargo_toml.lines() {
+        if line.starts_with("version") && line.contains('=') && new_version.is_empty() {
+            // Extract the current version string
+            let val = line
+                .split('=')
+                .nth(1)
+                .ok_or("malformed version line")?
+                .trim()
+                .trim_matches('"');
+            let parts: Vec<&str> = val.split('.').collect();
+            if parts.len() != 3 {
+                return Err(format!("version {val:?} is not semver x.y.z"));
+            }
+            let major: u32 = parts[0].parse().map_err(|_| "bad major")?;
+            let minor: u32 = parts[1].parse().map_err(|_| "bad minor")?;
+            let patch: u32 = parts[2].parse().map_err(|_| "bad patch")?;
+            let bumped = format!("{major}.{minor}.{}", patch + 1);
+            new_version = bumped.clone();
+            new_lines.push(format!("version = \"{bumped}\""));
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+    if new_version.is_empty() {
+        return Err("no version field found in Cargo.toml".into());
+    }
+    let mut out = new_lines.join("\n");
+    if cargo_toml.ends_with('\n') && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    fs::write(path, out).map_err(|e| e.to_string())?;
+    Ok(new_version)
+}
+
+/// Bump the patch version in `./Cargo.toml`.
+fn bump_version() -> Result<String, String> {
+    bump_version_in(Path::new("Cargo.toml"))
+}
+
 fn git_checkout_src() -> Result<(), String> {
     let s = Command::new("git")
         .args(["checkout", "--", "src/"])
@@ -134,24 +194,35 @@ fn prepend_journal_transcript(
     fs::write(journal_path, out)
 }
 
-fn git_wrap_up(session: u32) -> Result<(), String> {
-    if !git_status_dirty() {
-        return Ok(());
-    }
-    let add = Command::new("git")
+fn git_add_all() -> Result<(), String> {
+    let status = Command::new("git")
         .args(["add", "-A"])
         .status()
         .map_err(|e| e.to_string())?;
-    if !add.success() {
+    if !status.success() {
         return Err("git add -A failed".into());
     }
-    let msg = format!("Session {session}: wrap-up");
-    let commit = Command::new("git")
-        .args(["commit", "-m", &msg])
+    Ok(())
+}
+
+fn git_commit(message: &str) -> Result<(), String> {
+    let status = Command::new("git")
+        .args(["commit", "-m", message])
         .status()
         .map_err(|e| e.to_string())?;
-    if !commit.success() {
+    if !status.success() {
         return Err("git commit failed (nothing to commit?)".into());
+    }
+    Ok(())
+}
+
+fn git_push() -> Result<(), String> {
+    let status = Command::new("git")
+        .args(["push"])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err("git push failed".into());
     }
     Ok(())
 }
@@ -210,13 +281,9 @@ For each improvement, follow the evolve skill rules:
 - After each successful change, commit: git add -A && git commit -m "Session {session}: <short description>"
 - Then move on to the next improvement
 
-=== VERSION (Cargo.toml) ===
-
-Before your final commits, update the `version` field in Cargo.toml using semantic intent:
-- **Small change** (fix, tests, docs, refactor): bump the **minor** (second) component (e.g. `0.1.0` → `0.2.0`).
-- **New feature** (new capability, new module, user-visible behavior): bump the **major** (first) component and set the **minor** to **0** (e.g. `0.2.0` → `1.0.0`).
-
-Include the version bump in the same commit or an immediate follow-up commit with a clear message.
+**IMPORTANT**: do NOT bump the version in Cargo.toml yourself. The evolution
+harness will bump the patch version, run clippy, build, test, commit, push,
+and request a restart automatically after your session completes.
 
 === PHASE 5: Journal ===
 
@@ -242,8 +309,20 @@ Now begin. Read IDENTITY.md first."#
     )
 }
 
-/// Run one full evolution iteration (build → agent → verify → session counter → optional git wrap-up).
+/// Run one full evolution iteration.
+///
+/// Pipeline:
+/// 1. Pre-flight: `cargo build && cargo test`
+/// 2. Agent session (LLM makes code changes, commits along the way)
+/// 3. Post-check: `cargo build && cargo test` — revert `src/` on failure
+/// 4. Journal: prepend transcript to `JOURNAL.md`
+/// 5. Clippy: `cargo clippy --all-targets -- -D warnings`
+/// 6. Version bump: patch increment in `Cargo.toml`
+/// 7. Final build: `cargo build && cargo test`
+/// 8. Git: `add -A`, commit, push
+/// 9. Signal restart required
 pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, EvolutionError> {
+    // 1. Pre-flight
     cargo_build_test().map_err(EvolutionError::PreflightFailed)?;
 
     let session = read_day_count();
@@ -263,6 +342,7 @@ pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, Ev
         .with_skills(skills)
         .with_tools(default_tools());
 
+    // 2. Agent session
     let result = run_prompt(&mut agent, &prompt).await;
     let usage = result.usage;
     let transcript = result.text;
@@ -279,33 +359,69 @@ pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, Ev
 
     let mut warnings = Vec::new();
 
+    // 3. Post-check: build + test
     if cargo_build_test().is_err() {
-        eprintln!("yoyo: post-evolution build failed; reverting src/");
+        eprintln!("yoyo: post-evolution build/test failed; reverting src/");
         git_checkout_src().map_err(EvolutionError::PostCheckFailed)?;
         return Err(EvolutionError::PostCheckFailed(
-            "cargo build/test failed after evolution; reverting src/".into(),
+            "cargo build/test failed after evolution; reverted src/".into(),
         ));
     }
 
+    // 4. Journal: prepend transcript
     prepend_journal_transcript(Path::new("JOURNAL.md"), session, &transcript)
         .map_err(|e| EvolutionError::Agent(format!("failed to write JOURNAL.md: {e}")))?;
 
+    // Increment session counter
     let next_session = session + 1;
     write_day_count(next_session).map_err(|e| EvolutionError::Agent(e.to_string()))?;
 
-    if let Err(e) = git_wrap_up(session) {
-        warnings.push(format!("git wrap-up: {e}"));
+    // 5. Clippy
+    if let Err(e) = cargo_clippy() {
+        warnings.push(format!("clippy: {e}"));
+        eprintln!("yoyo: clippy warning — {e}");
+    }
+
+    // 6. Bump version
+    match bump_version() {
+        Ok(v) => eprintln!("yoyo: version bumped to {v}"),
+        Err(e) => warnings.push(format!("version bump: {e}")),
+    }
+
+    // 7. Final build (after version bump + any clippy fixes)
+    if let Err(e) = cargo_build_test() {
+        warnings.push(format!("final build: {e}"));
+        eprintln!("yoyo: final build failed — {e}");
+    }
+
+    // 8. Git: add, commit, push
+    if git_status_dirty() {
+        if let Err(e) = git_add_all() {
+            warnings.push(format!("git add: {e}"));
+        } else {
+            let msg = format!("Session {session}: wrap-up");
+            if let Err(e) = git_commit(&msg) {
+                warnings.push(format!("git commit: {e}"));
+            }
+        }
+    }
+
+    if let Err(e) = git_push() {
+        warnings.push(format!("git push: {e}"));
+        eprintln!("yoyo: git push failed — {e}");
     }
 
     if git_status_dirty() {
         warnings.push("working tree still has uncommitted changes".into());
     }
 
+    // 9. Signal restart
     Ok(EvolutionOutcome {
         session,
         transcript,
         usage,
         warnings,
+        restart_required: true,
     })
 }
 
@@ -338,5 +454,39 @@ mod tests {
 
         let s = fs::read_to_string(&journal).expect("read");
         assert!(s.contains("_No assistant text"));
+    }
+
+    #[test]
+    fn bump_version_increments_patch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo = dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo,
+            "[package]\nname = \"test\"\nversion = \"1.2.3\"\nedition = \"2021\"\n",
+        )
+        .expect("write");
+
+        let v = bump_version_in(&cargo).expect("bump should succeed");
+        assert_eq!(v, "1.2.4");
+
+        let content = fs::read_to_string(&cargo).expect("read");
+        assert!(content.contains("version = \"1.2.4\""), "got: {content}");
+    }
+
+    #[test]
+    fn bump_version_preserves_other_fields() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cargo = dir.path().join("Cargo.toml");
+        let original =
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nserde = \"1\"\n";
+        fs::write(&cargo, original).expect("write");
+
+        let v = bump_version_in(&cargo).expect("bump should succeed");
+        assert_eq!(v, "0.1.1");
+
+        let content = fs::read_to_string(&cargo).expect("read");
+        assert!(content.contains("name = \"test\""));
+        assert!(content.contains("edition = \"2021\""));
+        assert!(content.contains("serde = \"1\""));
     }
 }
