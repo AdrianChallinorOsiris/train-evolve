@@ -47,6 +47,7 @@ pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Err
         .route("/initialise", post(initialise_handler))
         .route("/program", post(program_handler))
         .route("/route", post(route_handler))
+        .route("/route/execute", post(route_execute_handler))
         .route("/automatic", post(automatic_handler))
         .route("/stop", post(stop_handler))
         // Pi read-only proxies
@@ -262,6 +263,68 @@ pub fn route_json(
     }))
 }
 
+impl AppState {
+    /// Execute a set of planned routes by sending commands to the Pi hardware.
+    pub async fn execute_routes_json(
+        &self,
+        body: InitialiseRequest,
+    ) -> Result<serde_json::Value, String> {
+        body.validate().map_err(|e| e.to_string())?;
+        let plans = route_planner::plan_routes(&body.trains).map_err(|e| e.to_string())?;
+
+        let mut results = Vec::new();
+        for plan in &plans {
+            let mut cmd_results = Vec::new();
+            for cmd in &plan.commands {
+                let result = execute_command(&self.pi, cmd).await;
+                cmd_results.push(json!({
+                    "command": cmd.to_string(),
+                    "success": result.is_ok(),
+                    "error": result.err().map(|e| e.to_string()),
+                }));
+            }
+            results.push(json!({
+                "train_index": plan.train_index,
+                "from_sensor": plan.from_sensor,
+                "to_sensor": plan.to_sensor,
+                "description": plan.description,
+                "commands_executed": cmd_results,
+            }));
+        }
+
+        Ok(json!({
+            "status": "executed",
+            "routes": results,
+        }))
+    }
+}
+
+/// Send a single track command to the Pi.
+async fn execute_command(
+    pi: &PiClient,
+    cmd: &route_planner::TrackCommand,
+) -> Result<(), crate::pi_client::PiError> {
+    match cmd {
+        route_planner::TrackCommand::SetPoint {
+            point_id,
+            direction,
+        } => {
+            pi.set_point(*point_id, *direction).await?;
+        }
+        route_planner::TrackCommand::SetTrackSpeed {
+            track_id,
+            direction,
+            speed,
+        } => {
+            pi.set_track_speed(*track_id, *direction, *speed).await?;
+        }
+        route_planner::TrackCommand::StopTrack { track_id } => {
+            pi.stop_track(*track_id).await?;
+        }
+    }
+    Ok(())
+}
+
 async fn health_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(state.health_json().await)
 }
@@ -365,6 +428,17 @@ async fn route_handler(
             };
             (code, e.to_string())
         })
+        .map(Json)
+}
+
+async fn route_execute_handler(
+    State(state): State<AppState>,
+    Json(body): Json<InitialiseRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    state
+        .execute_routes_json(body)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))
         .map(Json)
 }
 
