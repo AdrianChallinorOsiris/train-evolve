@@ -10,7 +10,7 @@ use yoagent::skills::SkillSet;
 use yoagent::tools::default_tools;
 use yoagent::Usage;
 
-use crate::agent_runner::run_prompt;
+use crate::agent_runner::{format_api_error_for_user, run_prompt};
 use crate::prompts::SYSTEM_PROMPT;
 use thiserror::Error;
 
@@ -268,7 +268,13 @@ pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, Ev
     let transcript = result.text;
 
     if let Some(api_err) = &result.api_error {
-        return Err(EvolutionError::Agent(format!("API error: {api_err}")));
+        let msg = format_api_error_for_user(&api_err.message);
+        let full = if msg == "Anthropic overloaded" {
+            msg
+        } else {
+            format!("API error: {msg}")
+        };
+        return Err(EvolutionError::Agent(full));
     }
 
     let mut warnings = Vec::new();

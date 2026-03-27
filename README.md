@@ -67,11 +67,17 @@ ANTHROPIC_API_KEY=sk-... cargo run -- --serve
 
 ```bash
 ANTHROPIC_API_KEY=sk-... cargo run
+# optional: --system path/to/prompt.txt  (override the embedded system prompt)
+# optional: --model …  --skills ./skills  (see yoyo --help)
 ```
+
+After each assistant reply, the REPL prints **tokens for this turn** and a **session total** (cumulative for that process).
 
 | Method | Path | Body | Purpose |
 |--------|------|------|---------|
 | `GET` | `/health` | — | JSON: `{ "status": "ok", "automatic": true/false }` |
+| `GET` | `/journal` | — | JSON: `{ "path": "JOURNAL.md", "text": "..." }` — evolution journal on disk |
+| `GET` | `/roadmap` | — | JSON: `{ "path": "ROADMAP.md", "text": "..." }` — planned curriculum |
 | `POST` | `/evolve` | (optional) | One evolution iteration (build → agent → verify → git wrap-up). Response includes `session` (from `DAY_COUNT`, a run counter). |
 | `POST` | `/initialise` | JSON: `{ "trains": [ { "sensor": 4 }, ... ] }` | Up to **6** trains; stores `data/runtime/trains.json` |
 | `POST` | `/program` | JSON (any) | Placeholder; saves payload to `data/runtime/program.json` for a future track program |
@@ -82,6 +88,8 @@ Example:
 
 ```bash
 curl -s http://127.0.0.1:8080/health
+curl -s http://127.0.0.1:8080/journal
+curl -s http://127.0.0.1:8080/roadmap
 curl -s -X POST http://127.0.0.1:8080/evolve
 curl -s -X POST http://127.0.0.1:8080/initialise \
   -H 'Content-Type: application/json' \
@@ -97,6 +105,12 @@ Environment: `MODEL` (default `claude-opus-4-6`), `YOYO_SKILLS` (comma-separated
 ```bash
 ANTHROPIC_API_KEY=sk-... ./scripts/evolve.sh
 ```
+
+## Developing
+
+- Run `cargo test`, `cargo clippy --all-targets -- -D warnings`, and `cargo fmt -- --check` before pushing (CI runs these).
+- New user-facing behavior should update [README.md](README.md) or [CLAUDE.md](CLAUDE.md) and include tests when practical.
+- Optional: `./commit "your message"` (repo root) runs those checks, bumps the **patch** version in `Cargo.toml`, then `git add -A`, commit, and push.
 
 ## The Story So Far
 

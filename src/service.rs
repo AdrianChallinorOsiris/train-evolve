@@ -1,5 +1,5 @@
 //! HTTP service: `/evolve`, `/initialise`, `/program`, `/automatic`, `/stop`, `/health`,
-//! `/pi/status`, `/pi/health`, `/pi/sensors`,
+//! `/journal`, `/roadmap`, `/pi/status`, `/pi/health`, `/pi/sensors`,
 //! `/pi/track/:id/speed`, `/pi/track/:id/stop`, `/pi/allstop`,
 //! `/pi/point/:id`, `/pi/sensor/:id`, `/pi/sensors/reset`.
 
@@ -33,6 +33,8 @@ pub struct AppState {
 pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Error> {
     let app = Router::new()
         .route("/health", get(health_handler))
+        .route("/journal", get(journal_handler))
+        .route("/roadmap", get(roadmap_handler))
         .route("/evolve", post(evolve_handler))
         .route("/initialise", post(initialise_handler))
         .route("/program", post(program_handler))
@@ -213,6 +215,52 @@ pub fn program_json(payload: serde_json::Value) -> Result<serde_json::Value, Sta
 
 async fn health_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(state.health_json().await)
+}
+
+/// Relative path to the evolution journal (same file the agent appends to).
+pub const JOURNAL_FILE: &str = "JOURNAL.md";
+
+/// Relative path to the planned curriculum.
+pub const ROADMAP_FILE: &str = "ROADMAP.md";
+
+/// JSON body for [`GET /journal`](journal_handler) (kept pure for tests).
+pub fn journal_response(text: &str) -> serde_json::Value {
+    json!({
+        "path": JOURNAL_FILE,
+        "text": text,
+    })
+}
+
+/// JSON body for [`GET /roadmap`](roadmap_handler) (kept pure for tests).
+pub fn roadmap_response(text: &str) -> serde_json::Value {
+    json!({
+        "path": ROADMAP_FILE,
+        "text": text,
+    })
+}
+
+async fn markdown_file_handler<F>(
+    path: &'static str,
+    to_json: F,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)>
+where
+    F: Fn(&str) -> serde_json::Value,
+{
+    match tokio::fs::read_to_string(path).await {
+        Ok(text) => Ok(Json(to_json(&text))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err((StatusCode::NOT_FOUND, format!("{path} not found")))
+        }
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
+    }
+}
+
+async fn journal_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    markdown_file_handler(JOURNAL_FILE, journal_response).await
+}
+
+async fn roadmap_handler() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    markdown_file_handler(ROADMAP_FILE, roadmap_response).await
 }
 
 async fn evolve_handler(State(state): State<AppState>) -> Response {
@@ -416,4 +464,23 @@ fn pi_control_error(e: crate::pi_client::PiError) -> (StatusCode, String) {
         PiError::BadResponse(_) => StatusCode::BAD_GATEWAY,
     };
     (code, e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn journal_response_includes_path_and_text() {
+        let v = journal_response("Day 0\n");
+        assert_eq!(v["path"], JOURNAL_FILE);
+        assert_eq!(v["text"], "Day 0\n");
+    }
+
+    #[test]
+    fn roadmap_response_includes_path_and_text() {
+        let v = roadmap_response("# Roadmap\n");
+        assert_eq!(v["path"], ROADMAP_FILE);
+        assert_eq!(v["text"], "# Roadmap\n");
+    }
 }

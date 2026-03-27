@@ -1,10 +1,37 @@
+## Intermediate session - End points
+
+This is Cursor. I did this because Anthropic is down at present.
+
+1. I added the /roadmap and /journal end points. I also updated the the roadmap to indicate these have been completed.
+2. I intercepted the 529 response from Anthropic yoyo and replaced it with a nice message.
+3. I handled the --system command line 
+4. I added token usage tracking
+
+Here’s what was done:
+
+1. Anthropic overload / 529 (REST roadmap sub-item)
+Added format_api_error_for_user in agent_runner.rs: if the provider message contains 529 or overloaded (case-insensitive), the user-facing string is Anthropic overloaded.
+POST /evolve uses this via run_evolution, so failures from overload map to that message instead of a raw API blob.
+REPL uses the same helper when printing assistant API errors.
+2. Git awareness (Level 2 roadmap)
+git rev-parse --abbrev-ref HEAD once at REPL startup.
+Banner line: git: <branch> when in a repo.
+Prompt: [branch] > instead of plain > when a branch is known; outside a repo it stays >.
+3. Roadmap (ROADMAP.md)
+[x] — Git awareness: detect if we're in a repo, show branch in prompt
+[x] — Trap an anthropic 529 error and report "Anthropic overloaded" (under /evolve)
+4. Journal (JOURNAL.md)
+HTML comment at the top describing these changes (renders as invisible in most Markdown viewers).
+Tests: three new unit tests for format_api_error_for_user. cargo test, clippy -D warnings, and fmt --check all pass.
+
+
+
 ## Session 3 — Evolution transcript
-
-
 
 I'll start by reading all the required files in order.Now let me read my source code:Now let me read the remaining source files:Now let me read the control skill and check data files:Now let me run the current tests to check the starting state:Good — 34 tests pass, clean build. Now let me check git status and check for any issues:There are uncommitted changes in several files. Let me see what they are:These are mostly formatting changes (rustfmt) plus the `prepend_journal_transcript` feature that was already added. They look correct and tests pass. Let me commit these first, then focus on my session 3 improvements.Good. Now let me assess where I am and decide what to work on.
 
 **Self-Assessment:**
+
 1. ✅ Build and tests pass (34 tests)
 2. Level 1 remaining items: API error handling (done in session 2), Ctrl+C (done in session 2). Only one remains unchecked: "Handle Ctrl+C gracefully" — but looking at the code, it IS implemented (lines 316-328 of main.rs). It just wasn't checked off in the roadmap.
 3. Looking at the roadmap, Level 1 is nearly complete. The remaining Level 2 items are about coding standards.
@@ -19,8 +46,9 @@ Let me first check the control skill's API and the track layout:Now let me also 
 **Theme: Add Pi track control capabilities (POST methods) to PiClient and expose as HTTP endpoints**
 
 This covers Level 3 items:
+
 1. "Learn to switch points" — add `set_point` to PiClient
-2. Add `set_track_speed`, `stop_track`, `all_stop` to PiClient  
+2. Add `set_track_speed`, `stop_track`, `all_stop` to PiClient
 3. Expose these as HTTP endpoints on the yoyo service
 4. Add tests for the new PiClient methods and endpoints
 
@@ -32,6 +60,7 @@ Let me implement this:Now I'll implement the changes. The plan:
 4. **Write tests**
 
 Let me start with the PiClient:Now add the control methods to PiClient:Now update the tests section to add tests for the new types and methods:Now let's build and test:All 46 tests pass. Now let me add the HTTP endpoints for track control to the service. I need to add endpoints for:
+
 - `POST /pi/track/{id}/speed` — set track speed/direction
 - `POST /pi/track/{id}/stop` — stop one track
 - `POST /pi/allstop` — emergency stop all

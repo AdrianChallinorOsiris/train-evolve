@@ -17,6 +17,16 @@ impl std::fmt::Display for ApiError {
 
 impl std::error::Error for ApiError {}
 
+/// Maps provider overload signals (e.g. HTTP 529) to a short operator-facing message.
+pub fn format_api_error_for_user(provider_message: &str) -> String {
+    let lower = provider_message.to_ascii_lowercase();
+    if provider_message.contains("529") || lower.contains("overloaded") {
+        "Anthropic overloaded".to_string()
+    } else {
+        provider_message.to_string()
+    }
+}
+
 /// Result of a single agent turn.
 pub struct PromptResult {
     pub usage: Usage,
@@ -95,5 +105,29 @@ mod tests {
             message: "rate limited".into(),
         };
         assert_eq!(e.to_string(), "rate limited");
+    }
+
+    #[test]
+    fn format_api_error_529_is_overloaded() {
+        assert_eq!(
+            format_api_error_for_user("status 529 from upstream"),
+            "Anthropic overloaded"
+        );
+    }
+
+    #[test]
+    fn format_api_error_overloaded_keyword() {
+        assert_eq!(
+            format_api_error_for_user("Service temporarily overloaded"),
+            "Anthropic overloaded"
+        );
+    }
+
+    #[test]
+    fn format_api_error_other_passthrough() {
+        assert_eq!(
+            format_api_error_for_user("invalid x-api-key"),
+            "invalid x-api-key"
+        );
     }
 }

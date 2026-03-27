@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Run the same checks as .github/workflows/ci.yml; on success bump patch version, then git add -A, commit, push.
-# Usage: ./scripts/commit "Your commit message"
+# Usage: ./commit "Your commit message"
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 if [ "$#" -ne 1 ]; then

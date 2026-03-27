@@ -18,13 +18,16 @@ cargo fmt                # Auto-format
 
 CI runs all four checks (build, test, clippy with -D warnings, fmt check) on push/PR to main.
 
+Optional maintainer helper (repo root): `./commit "message"` runs the same checks, bumps the **patch** version in `Cargo.toml`, then `git add -A`, commit, and push.
+
 To run the agent interactively (REPL):
 ```bash
 ANTHROPIC_API_KEY=sk-... cargo run
 ANTHROPIC_API_KEY=sk-... cargo run -- --model claude-opus-4-6 --skills ./skills
+# optional: --system path/to/prompt.txt  (custom system prompt file, UTF-8)
 ```
 
-HTTP service (`GET /health`, `POST /evolve`, `POST /initialise`, `POST /program`, `POST /automatic`, `POST /stop`):
+HTTP service (`GET /health`, `GET /journal`, `GET /roadmap`, `POST /evolve`, `POST /initialise`, `POST /program`, `POST /automatic`, `POST /stop`):
 ```bash
 ANTHROPIC_API_KEY=sk-... cargo run -- --serve
 ```

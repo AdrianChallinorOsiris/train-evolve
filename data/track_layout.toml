@@ -165,3 +165,7 @@ sensor_ids = [2, 7, 12, 17]
 [[stations]]
 name = "bridge"
 sensor_ids = [5, 9, 16]
+
+[[stations]]
+name = "industrial" 
+sensor_ids = [23]

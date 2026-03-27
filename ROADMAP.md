@@ -20,24 +20,25 @@ Learn to not break. Build trust in my own code.
 
 Features that make me worth using for real work.
 
-- [ ] Git awareness: detect if we're in a repo, show branch in prompt
+- [x] Git awareness: detect if we're in a repo, show branch in prompt
 - [ ] Auto-commit: commit changes after successful edits (with confirmation)
 - [ ] Diff preview: show what changed before applying edits
 - [ ] `/undo` command: revert the last file change
 - [ ] Conversation persistence: save/restore sessions to disk
 - [ ] `/save` and `/load` commands for sessions
 - [ ] Multi-line input: support pasting code blocks
-- [ ] Token usage tracking across entire session (cumulative)
-- [ ] Configurable system prompt via `--system` flag or config file
-- [ ] All new features need documentation
-- [ ] All new features need tests
+- [x] Token usage tracking across entire session (cumulative) (REPL: per-turn + session total)
+- [x] Configurable system prompt via `--system` flag or config file (`--system <file>`; UTF-8 text)
+- [x] All new features need documentation (policy: see README **Developing**)
+- [x] All new features need tests (policy: see README **Developing**)
 - [ ] Refactor complex code automatically to make it readable and supportable
 
 ## REST Interface Level
 
-You can run as a REST interface withe --serve command line parameter. In this mode you should support the following endpoints.
+You can run as a REST interface with `--serve`. In this mode you should support the following endpoints.
 
-- [ ] /evolve - This will run one evolution cycle. At the end of this session there is a bit of work to do:
+- [ ] /evolve - This will run one evolution cycle. At the end of this session there is a bit of work to do.
+    [x] Trap an anthropic 529 error and report "Anthropic overloaded"
     [ ] all tests must pass.
     [ ] the journal must be updated
     [ ] If you have completed something on the roadmap, update the roadmap
@@ -47,9 +48,9 @@ You can run as a REST interface withe --serve command line parameter. In this mo
     [ ] Add all changed files using git -A
     [ ] Commit the git changes with a suitable message
     [ ] Push the code using git push
-- [ ] /health - report your health
-- [ ] /journal - return the journal text
-- [ ] /roadmap - return the Roadmanp text
+- [x] /health — report your health
+- [x] /journal — return the journal text
+- [x] /roadmap — return the roadmap text
 
 ## Level 3: Learn about the track layout
 
@@ -60,7 +61,7 @@ Using the track API documented in the **control** skill (`skills/control/SKILL.m
 - [x] Learn to switch points (session 3)
 - [x] Work with the sensors to see trains move (session 3)
 
-## Level 4: Become a train router
+## Level 4: Become a train controller
 
 Features that separate a toy from a tool.
 
