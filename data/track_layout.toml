@@ -5,6 +5,13 @@
 version = 2
 
 # --- Tracks 1-2 Outer loop ------------------------------------------
+# Tracks 1 and 2 form a continuous loop:
+#
+#   Connection 1 (T2 FWD → T1 BWD)
+#     → Sensor 1 → Sensor 2 → Sensor 3        (Track 1, along_fwd)
+#   Connection 2 (T1 FWD → T2 BWD)
+#     → Sensor 4 → [couplers] → Sensor 5       (Track 2, along_fwd)
+#     → back to Connection 1 … (loop repeats)
 
 [[tracks]]
 id = 1

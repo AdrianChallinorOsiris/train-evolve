@@ -35,6 +35,23 @@ The previous **v1** format (separate `fwd_end` / `bwd_end` and `[[points]]` tabl
 
 Each **track** is a powered segment with intrinsic **FWD** and **BWD** ends (your physical convention).
 
+### Outer loop (Tracks 1 & 2)
+
+Tracks 1 and 2 form a continuous loop. Following the `along_fwd` direction on both tracks:
+
+```
+Connection 1 (T2 FWD → T1 BWD)
+  → Sensor 1 → Sensor 2 → Sensor 3         [Track 1]
+Connection 2 (T1 FWD → T2 BWD)
+  → Sensor 4 → [Coupler 1, Coupler 3] → Sensor 5   [Track 2]
+  → back to Connection 1 … (loop repeats)
+```
+
+Connection 1 joins **Track 2's FWD end** to **Track 1's BWD end**.
+Connection 2 joins **Track 1's FWD end** to **Track 2's BWD end**.
+
+### General track structure
+
 - **`along_fwd`** — Ordered list of [`RouteNode`](#route-nodes) values from the **BWD** end toward the **FWD** end: sensors, couplers, **`connection`** hops to other tracks, nested **`point`** junctions, **`buffer`**, **`inline`**, etc.
 
 There are **no** separate `fwd_end` / `bwd_end` fields: track-to-track links are **`connection`** nodes placed in order inside `along_fwd`.

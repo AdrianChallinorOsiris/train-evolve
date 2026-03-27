@@ -657,6 +657,7 @@ fn find_next_sensor_after_coupler(flat: &[FlatItem], target: &FlatItem) -> u8 {
 }
 
 
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::model::TrackLayout;
@@ -741,8 +742,8 @@ mod tests {
     #[test]
     fn route_across_track_boundary() {
         let graph = canonical_graph();
-        // Sensor 3 is on track 1, sensor 4 is on track 2.
-        // Connection 2 links track 1 fwd to track 2 bwd.
+        // Sensor 3 is the last sensor on track 1, sensor 4 is the first on track 2.
+        // Connection 2 joins track 1 FWD end to track 2 BWD end, so 3→4 crosses it.
         let route = graph.find_route(3, 4);
         assert!(
             route.is_some(),
