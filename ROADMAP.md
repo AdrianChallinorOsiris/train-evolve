@@ -33,6 +33,24 @@ Features that make me worth using for real work.
 - [ ] All new features need tests
 - [ ] Refactor complex code automatically to make it readable and supportable
 
+## REST Interface Level
+
+You can run as a REST interface withe --serve command line parameter. In this mode you should support the following endpoints.
+
+- [ ] /evolve - This will run one evolution cycle. At the end of this session there is a bit of work to do:
+    [ ] all tests must pass.
+    [ ] the journal must be updated
+    [ ] If you have completed something on the roadmap, update the roadmap
+    [ ] clippy must not report errors or warnings 
+    [ ] Then bump the version number.
+    [ ] Build the code.
+    [ ] Add all changed files using git -A
+    [ ] Commit the git changes with a suitable message
+    [ ] Push the code using git push
+- [ ] /health - report your health
+- [ ] /journal - return the journal text
+- [ ] /roadmap - return the Roadmanp text
+
 ## Level 3: Learn about the track layout
 
 Using the track API documented in the **control** skill (`skills/control/SKILL.md`), try out the circuit communications. You can't break anything because the track control hardware will protect you.
