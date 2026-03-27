@@ -58,7 +58,7 @@ You can run as a REST interface with `--serve`. In this mode you should support 
 Using the track API documented in the **control** skill (`skills/control/SKILL.md`), try out the circuit communications. You can't break anything because the track control hardware will protect you.
 
 - [x] Use the Status endpoint to get the status of the train track (session 3)
-- [ ] Learn how tracks work
+- [x] Learn how tracks work (session 4)
 - [x] Learn to switch points (session 3)
 - [x] Work with the sensors to see trains move (session 3)
 
@@ -68,9 +68,9 @@ Features that separate a toy from a tool.
 
 You will be given the locations of a number of trains by their position on a track segment and the direction the train is facing. Each train will have a desired destination, this being a sensor position.
 
-- [ ] Work out a route for each train.
-- [ ] Be able to display this route as a series of track commands
-- [ ] Upon request, execute these routes by sending commands to the track hardware
+- [x] Work out a route for each train. (session 5)
+- [x] Be able to display this route as a series of track commands (session 5)
+- [x] Upon request, execute these routes by sending commands to the track hardware (session 5)
 
 ## Boss Level: Prove It
 

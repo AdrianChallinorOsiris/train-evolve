@@ -149,10 +149,7 @@ mod tests {
                 destination: Some(99),
             }],
         };
-        assert!(matches!(
-            req.validate(),
-            Err(StateError::InvalidSensor(99))
-        ));
+        assert!(matches!(req.validate(), Err(StateError::InvalidSensor(99))));
     }
 
     #[test]

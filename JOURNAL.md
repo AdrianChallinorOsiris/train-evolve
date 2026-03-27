@@ -1,3 +1,60 @@
+## Session 5 — Evolution transcript
+
+
+
+I'll start by reading all the required files in order.Now let me read the remaining source files and the journal:Now let me check the current state:Good — 66 tests pass (54 + 12), clean working tree, session counter is 5. Now let me do my self-assessment and decide what to work on.
+
+## Self-Assessment
+
+**State:** 66 tests pass, clippy clean, no uncommitted changes, session 5.
+
+**No community issues** — no ISSUES_TODAY.md file.
+
+**Roadmap review:**
+- Level 1: ✅ Complete
+- Level 2: Remaining items (auto-commit, diff preview, /undo, conversation persistence, multi-line input, refactor) — not critical for train control
+- Level 3: "Learn how tracks work" is the remaining unchecked item. Session 4 built the full graph with BFS pathfinding. This IS "learning how tracks work" — I should check it off.
+- **Level 4: "Become a train controller"** — this is the next frontier:
+  - [ ] Work out a route for each train
+  - [ ] Display route as a series of track commands
+  - [ ] Execute routes by sending commands to track hardware
+
+**Decision:** Session 4 already completed the graph/pathfinding work for "Learn how tracks work." This session I'll focus on **Level 4: Route planning** — specifically the first two items: given train positions, compute routes and display them as track commands. This means:
+
+1. Check off "Learn how tracks work" (done in session 4)
+2. Add a `Route::to_commands()` method that converts a route to a sequence of Pi API commands (point settings + track direction/speed)
+3. Enhance the `/initialise` endpoint to accept destinations for each train
+4. Add a route-planning API that computes and displays routes
+
+Let me start implementing.Clean. Let me plan the implementation:
+
+**Level 4 work: Route planning**
+
+The key capability needed:
+1. Given train positions (from `/initialise`) and destinations (sensor IDs), compute routes using the graph
+2. Convert routes to concrete track commands (point settings, track directions/speeds)
+3. A new `/route` endpoint that accepts train positions + destinations and returns the planned commands
+4. Display support — a human-readable description of each route
+
+Let me start by enhancing the state model to include destinations, then building the route-to-commands logic.Now I need to design the route planning module. Here's my plan:
+
+1. **New module `src/route_planner.rs`**: Takes train positions + destinations, builds the graph, finds routes, converts to commands
+2. **Enhance `TrainPosition`** to include an optional `destination` sensor
+3. **New `TrackCommand` enum**: Represents concrete Pi commands (set point, set track speed, etc.)
+4. **Route display**: A `Route::describe()` method that produces human-readable text
+5. **New REST endpoint `POST /route`**: Accepts positions + destinations, returns planned routes as commands
+
+Let me implement this step by step.
+
+First, add the `destination` field to `TrainPosition` and create the route planner module:Now add destination validation to `validate()`:Now create the route planner module:Register the module in lib.rs:Now build and test:`TrackLayout` is re-exported from the layout module. Let me fix the import:Also fix the test import:I need to update the existing tests to include the `destination` field. Let me fix all of them:77 tests pass. Now let me add the `/route` REST endpoint and REPL command. Let me add it to the service:Now add the route handler to the router:Now add the route_json function and handler:Now add the route HTTP handler function:Now add the REPL command for `/route`. Let me update main.rs:Now add the `/route` REPL dispatch. Let me find the right place:Now update the help text:Also update the REPL help commands list:Now update the HTTP endpoint listing in the help and startup banners:Update the serve startup banner:Now build and test:77 tests pass. Let me check clippy:Clean. Now let me commit this first chunk:Good. Now I want to add a `Route::describe()` method that includes station names, and make the route display more useful. Let me also add a `display_commands` function that produces the "series of track commands" the roadmap asks for. Let me also look at whether I should add a `POST /route/execute` endpoint for the third roadmap item.
+
+But first, let me think about what the roadmap actually says:
+- [x] Work out a route for each train. ← Done with `plan_routes`
+- [ ] Be able to display this route as a series of track commands ← Done with `PlannedRoute.commands` and `TrackCommand::Display`
+- [ ] Upon request, execute these routes by sending commands to the track hardware
+
+The third item requires actually calling the Pi. Let me add a `/route/execute` endpoint that calls the Pi API to execute planned routes:Now let me add the route execution capability. I'll add it to the service layer since it needs the Pi client:Now add the `/route/execute` HTTP endpoint:Now add the route execute handler:Now build and test:Let me check clippy:Now commit:Good. Now let me update the startup banner and help text to document the new endpoints:Also add `/route/execute` to the HTTP endpoints list:Now let me update the roadmap and journal. First, the roadmap:Now write the journal entry:
+
 ## Session 4 — Evolution transcript
 
 

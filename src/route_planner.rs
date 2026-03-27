@@ -120,17 +120,17 @@ pub fn plan_routes_with_graph(
 ) -> Result<Vec<PlannedRoute>, PlanError> {
     let mut planned = Vec::new();
     for (i, train) in trains.iter().enumerate() {
-        let dest = train
-            .destination
-            .ok_or(PlanError::NoDestination {
-                train_index: i,
-                sensor: train.sensor,
-            })?;
-        let route = graph.find_route(train.sensor, dest).ok_or(PlanError::NoRoute {
+        let dest = train.destination.ok_or(PlanError::NoDestination {
             train_index: i,
-            from: train.sensor,
-            to: dest,
+            sensor: train.sensor,
         })?;
+        let route = graph
+            .find_route(train.sensor, dest)
+            .ok_or(PlanError::NoRoute {
+                train_index: i,
+                from: train.sensor,
+                to: dest,
+            })?;
         planned.push(route_to_plan(i, &route, graph));
     }
     Ok(planned)
@@ -316,7 +316,7 @@ mod tests {
         let plans = plan_routes_with_graph(&trains, &graph).unwrap();
         assert_eq!(plans.len(), 1);
         // Should cross from track 1 to track 2
-        assert!(plans[0].track_ids.len() >= 1);
+        assert!(!plans[0].track_ids.is_empty());
         assert!(plans[0].description.contains("Crosses"));
     }
 
@@ -401,13 +401,11 @@ mod tests {
             track_ids: vec![1, 2],
             hop_count: 4,
             description: "test".into(),
-            commands: vec![
-                TrackCommand::SetTrackSpeed {
-                    track_id: 1,
-                    direction: TrackDirection::Fwd,
-                    speed: 40,
-                },
-            ],
+            commands: vec![TrackCommand::SetTrackSpeed {
+                track_id: 1,
+                direction: TrackDirection::Fwd,
+                speed: 40,
+            }],
         };
         let json = serde_json::to_value(&plan).unwrap();
         assert_eq!(json["from_sensor"], 1);

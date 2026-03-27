@@ -94,6 +94,7 @@ REPL COMMANDS:
   /health              Same as GET /health
   /evolve              Same as POST /evolve
   /initialise <json>   Same as POST /initialise (JSON on one line)
+  /route <json>        Same as POST /route
   /program <json>      Same as POST /program
   /route <json>        Same as POST /route (compute routes for trains)
   /automatic           Same as POST /automatic
@@ -113,6 +114,7 @@ HTTP (--serve) ENDPOINTS:
   POST /evolve         Trigger evolution session
   POST /initialise     Set train positions
   POST /route          Compute routes for trains with destinations
+  POST /route/execute  Compute routes and execute on Pi hardware
   POST /program        Upload track program
   POST /automatic      Start automatic mode
   POST /stop           Stop automatic mode

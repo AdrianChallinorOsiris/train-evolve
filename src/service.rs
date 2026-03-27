@@ -251,9 +251,7 @@ pub fn program_json(payload: serde_json::Value) -> Result<serde_json::Value, Sta
 }
 
 /// Same as `POST /route`: compute routes for trains with destinations.
-pub fn route_json(
-    body: InitialiseRequest,
-) -> Result<serde_json::Value, route_planner::PlanError> {
+pub fn route_json(body: InitialiseRequest) -> Result<serde_json::Value, route_planner::PlanError> {
     body.validate()
         .map_err(|e| route_planner::PlanError::Layout(e.to_string()))?;
     let plans = route_planner::plan_routes(&body.trains)?;
