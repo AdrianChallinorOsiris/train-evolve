@@ -46,7 +46,7 @@ impl fmt::Display for TrackDirection {
 }
 
 /// Point direction for `POST /api/points/{id}`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum PointDirection {
     Thru,

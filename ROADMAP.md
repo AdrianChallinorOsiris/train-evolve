@@ -48,6 +48,7 @@ You can run as a REST interface with `--serve`. In this mode you should support 
     [ ] Add all changed files using git -A
     [ ] Commit the git changes with a suitable message
     [ ] Push the code using git push
+    [ ] Shut down the application and restart to get the latest changes
 - [x] /health — report your health
 - [x] /journal — return the journal text
 - [x] /roadmap — return the roadmap text
