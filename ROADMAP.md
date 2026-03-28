@@ -76,7 +76,7 @@ You will be given the locations of a number of trains by their position on a tra
 
 You will be given the same starting points as in the previous level.
 
-- [ ] Continually route trains, avoiding collisions
-- [ ] You will use all track segments
-- [ ] Some sensors indicate train stations. You will stop trains at the station for a period of up to 15 seconds
-- [ ] Trains at a station may stop awaiting another train to arrive at an adjacent platform
+- [x] Continually route trains, avoiding collisions (session 6)
+- [x] You will use all track segments (session 6)
+- [x] Some sensors indicate train stations. You will stop trains at the station for a period of up to 15 seconds (session 6)
+- [x] Trains at a station may stop awaiting another train to arrive at an adjacent platform (session 6)

@@ -1,3 +1,7 @@
+## Session 6 — Boss-level train controller
+
+Built the core Boss Level system: a `TrainController` that continuously routes trains around the layout with collision avoidance (segment reservation), station dwell stops (15s at stations), adjacent-platform waiting, and track usage balancing to ensure all 12 segments get traffic. Replaced the placeholder `automatic_loop` with real integration: the `/automatic` endpoint now loads train positions, builds the controller, picks destinations (scoring by station priority, visit history, and underused track segments), plans collision-free routes, executes commands on the Pi, polls sensors for arrival, and dwells at stations. Added 14 new tests covering controller creation, station awareness, collision avoidance, dwell timing, adjacent platform waits, and track usage tracking. Next: test with real hardware and refine sensor polling / direction detection.
+
 ## Session 5 — Evolution transcript
 
 
