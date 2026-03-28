@@ -39,9 +39,7 @@ pub fn print_repl_help() {
     println!("  {GREEN}/quit{RESET}               Exit");
     println!("\n{BOLD}  Service (same as HTTP --serve):{RESET}");
     println!("  {GREEN}/health{RESET}  {GREEN}/journal{RESET}  {GREEN}/roadmap{RESET}  {GREEN}/evolve{RESET}  {GREEN}/automatic{RESET}  {GREEN}/automatic/status{RESET}  {GREEN}/stop{RESET}");
-    println!(
-        "  {GREEN}/initialise <json>{RESET}   e.g. {{\"trains\":[{{\"sensor\":3}}]}}"
-    );
+    println!("  {GREEN}/initialise <json>{RESET}   e.g. {{\"trains\":[{{\"sensor\":3}}]}}");
     println!("  {GREEN}/program <json>{RESET}      track program placeholder JSON");
     println!(
         "  {GREEN}/route <json>{RESET}        route planner — e.g. {{\"trains\":[{{\"sensor\":1,\"destination\":5}}]}}"
@@ -338,10 +336,7 @@ mod tests {
 
     #[test]
     fn parse_point_direction_thru() {
-        assert_eq!(
-            parse_point_direction("thru").unwrap(),
-            PointDirection::Thru
-        );
+        assert_eq!(parse_point_direction("thru").unwrap(), PointDirection::Thru);
         assert_eq!(
             parse_point_direction("BRANCH").unwrap(),
             PointDirection::Branch

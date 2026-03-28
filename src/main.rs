@@ -37,8 +37,8 @@ use yoagent::*;
 use yoyo::agent_runner::format_api_error_for_user;
 use yoyo::automation::AutomationController;
 use yoyo::evolve_session::EvolutionConfig;
-use yoyo::pi_client::DEFAULT_PI_URL;
 use yoyo::pi_client::PiClient;
+use yoyo::pi_client::DEFAULT_PI_URL;
 use yoyo::prompts::SYSTEM_PROMPT;
 use yoyo::service::{serve, AppState};
 
@@ -253,7 +253,9 @@ async fn run_serve(args: &[String]) {
     };
     eprintln!("yoyo v{}: HTTP service on http://{bind}", VERSION);
     eprintln!("yoyo: POST /evolve /initialise /route /program /automatic /stop");
-    eprintln!("yoyo: GET  /health /journal /roadmap /automatic/status /pi/status /pi/health /pi/sensors");
+    eprintln!(
+        "yoyo: GET  /health /journal /roadmap /automatic/status /pi/status /pi/health /pi/sensors"
+    );
     eprintln!("yoyo: POST /pi/track/:id/speed /pi/track/:id/stop /pi/allstop /pi/point/:id /pi/sensor/:id /pi/sensors/reset");
     if let Err(e) = serve(bind, state).await {
         eprintln!("yoyo: server error: {e}");
@@ -426,8 +428,7 @@ async fn run_repl(args: &[String]) {
             _ => {}
         }
 
-        let (last_usage, cancelled) =
-            run_agent_turn(&mut agent, input).await;
+        let (last_usage, cancelled) = run_agent_turn(&mut agent, input).await;
 
         print_turn_usage(&last_usage, &mut session_tokens_in, &mut session_tokens_out);
         if cancelled {
