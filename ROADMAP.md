@@ -31,7 +31,7 @@ Features that make me worth using for real work.
 - [x] Configurable system prompt via `--system` flag or config file (`--system <file>`; UTF-8 text)
 - [x] All new features need documentation (policy: see README **Developing**)
 - [x] All new features need tests (policy: see README **Developing**)
-- [ ] Refactor complex code automatically to make it readable and supportable
+- [x] Refactor complex code automatically to make it readable and supportable (session 8)
 
 ## REST Interface Level
 

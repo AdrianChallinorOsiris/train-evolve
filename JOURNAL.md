@@ -1,3 +1,7 @@
+## Session 8 — Refactor main.rs for readability
+
+Extracted the REPL command dispatch (~250 lines) from main.rs into a new `src/repl.rs` module containing service dispatch, Pi subcommand dispatch, parser helpers, and the `/help` text. Split `main()` into `run_serve()` and `run_repl()` for clarity, and extracted the agent streaming loop into `run_agent_turn()` and tool display into `tool_summary()`. Fixed duplicate `/route` in `--help` text, added version to `--serve` startup banner, and deduplicated help text so `/help` uses a single source of truth. Added 10 new tests for parser helpers and tool summary formatting. main.rs went from 934 → 712 lines; total test count 87+22=109 (up from 99). Next: continue Level 2 items or tackle any community issues.
+
 ## Session 7 — Evolution transcript
 
 
