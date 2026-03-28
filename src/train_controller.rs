@@ -350,7 +350,7 @@ impl TrainController {
 }
 
 /// Execute one track command on the Pi.
-async fn execute_command(pi: &PiClient, cmd: &TrackCommand) -> Result<(), PiError> {
+pub async fn execute_command(pi: &PiClient, cmd: &TrackCommand) -> Result<(), PiError> {
     match cmd {
         TrackCommand::SetPoint {
             point_id,

@@ -21,6 +21,7 @@ use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
 use crate::pi_client::{PiClient, PointDirection, TrackDirection};
 use crate::route_planner;
 use crate::state::{self, InitialiseRequest, StateError};
+use crate::train_controller;
 
 /// Sender used by the evolve handler to tell the server loop to shut down for a restart.
 pub type ShutdownSender = tokio::sync::watch::Sender<bool>;
@@ -274,7 +275,7 @@ impl AppState {
         for plan in &plans {
             let mut cmd_results = Vec::new();
             for cmd in &plan.commands {
-                let result = execute_command(&self.pi, cmd).await;
+                let result = train_controller::execute_command(&self.pi, cmd).await;
                 cmd_results.push(json!({
                     "command": cmd.to_string(),
                     "success": result.is_ok(),
@@ -295,32 +296,6 @@ impl AppState {
             "routes": results,
         }))
     }
-}
-
-/// Send a single track command to the Pi.
-async fn execute_command(
-    pi: &PiClient,
-    cmd: &route_planner::TrackCommand,
-) -> Result<(), crate::pi_client::PiError> {
-    match cmd {
-        route_planner::TrackCommand::SetPoint {
-            point_id,
-            direction,
-        } => {
-            pi.set_point(*point_id, *direction).await?;
-        }
-        route_planner::TrackCommand::SetTrackSpeed {
-            track_id,
-            direction,
-            speed,
-        } => {
-            pi.set_track_speed(*track_id, *direction, *speed).await?;
-        }
-        route_planner::TrackCommand::StopTrack { track_id } => {
-            pi.stop_track(*track_id).await?;
-        }
-    }
-    Ok(())
 }
 
 async fn health_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
