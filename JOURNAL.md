@@ -1,3 +1,64 @@
+## Session 6 — Evolution transcript
+
+
+
+I'll start by reading all the required files systematically.Now let me read the remaining source files, the journal, and the layout/graph code:Now let me read the remaining files and check the current state:Now let me check the current state:Good — 77 tests pass (65 + 12), clean working tree, session counter is 6. Let me also check for issues and the track layout data:Now let me also look at the track layout data to understand stations:Good. Now I have the complete picture. Let me do my self-assessment.
+
+## Self-Assessment
+
+**State:** 77 tests pass (65 + 12), clippy clean, no uncommitted changes, session 6.
+
+**No community issues** — no ISSUES_TODAY.md file.
+
+**Roadmap review:**
+- Level 1: ✅ Complete
+- Level 2: Several items remain (not critical for train control)
+- Level 3: ✅ Complete
+- Level 4: ✅ Complete (all three items checked off in session 5)
+- **Boss Level: "Prove It"** — this is the next frontier:
+  - [ ] Continually route trains, avoiding collisions
+  - [ ] You will use all track segments
+  - [ ] Some sensors indicate train stations. You will stop trains at the station for a period of up to 15 seconds
+  - [ ] Trains at a station may stop awaiting another train to arrive at an adjacent platform
+
+**Code observations:**
+1. The `automation.rs` is a placeholder — it has a tick loop but doesn't actually do anything. This is where the Boss Level logic needs to go.
+2. The layout has `stations` defined with sensor IDs — these map to the Boss Level requirement about station stops.
+3. The route planner always uses `FWD` direction — it doesn't determine traversal direction. This is a known limitation noted in a comment.
+4. The current route planner plans static routes from A→B. Boss Level needs continuous routing with collision avoidance.
+
+**Decision:** I'll focus on **Boss Level: Collision-free continuous routing**. The biggest gap is that `automatic_loop` is an empty placeholder. I need to:
+
+1. Build a collision avoidance system — track which segments are occupied and don't route two trains onto the same segment
+2. Integrate station awareness — detect when a train reaches a station sensor and pause it
+3. Wire the automatic loop to use the Pi client for real hardware control (or simulation)
+
+This is a large task, so I'll focus on the core data structures and logic first:
+- A `TrainState` tracker that knows where each train is and where it's going
+- A collision-aware route selector
+- Station dwell logic
+- Integration into the automatic loop
+
+Let me implement this step by step.Now I have a thorough understanding. Let me implement the Boss Level automation. I'll create a new `train_controller.rs` module that implements continuous train routing with collision avoidance and station stops.
+
+The key design:
+1. **TrainController** — manages all trains, their states, and routes
+2. **Collision avoidance** — track segment reservation: don't let two trains be routed onto the same segment
+3. **Station dwell** — when a train reaches a station sensor, stop it for up to 15 seconds
+4. **Continuous routing** — after a train reaches its destination, pick a new one
+5. Wire this into `automatic_loop` with Pi client integrationNow register it in lib.rs:I need to fix two things: remove unused import and either derive PartialEq/Eq for PlannedRoute or remove the derive from TrainPhase:Now I need to either add PartialEq/Eq to PlannedRoute (and TrackCommand already has it) or remove the derive from TrainPhase. Since PlannedRoute contains Vec<TrackCommand> which already derives PartialEq/Eq, I'll add the derives to PlannedRoute:Wait, that removed the `pub struct PlannedRoute {` line. Let me fix:I see — the struct keyword is missing. Let me fix it:89 tests pass. Now let me check clippy:Clean. Now let me wire the new controller into the automation module. The current `automatic_loop` is a placeholder — I need to replace it with the real controller:Now I need to update the callers of `automation.start()` since it now takes a `pi` parameter. Let me find them:Now check if the REPL also calls start:Good — the REPL calls `automatic_start_json()` which calls `self.automation.start(self.pi.clone())` — so that's handled.89 tests pass. Let me run clippy:All clean. Let me commit this progress:Now let me also add a `GET /automatic/status` endpoint so the operator can see the state of automatic mode (which trains are where, what phase they're in). This makes the Boss Level more observable. But first, let me think about what's still needed to fully satisfy the Boss Level requirements:
+
+1. ✅ Continually route trains, avoiding collisions — implemented in `TrainController`
+2. ⬜ Use all track segments — the destination picker should try to route through all segments. Right now it just cycles stations.
+3. ✅ Station stops with dwell time — `STATION_DWELL_SECS = 15`
+4. ✅ Trains at a station may stop awaiting another train — `should_wait_for_adjacent()`
+
+For item 2 ("use all track segments"), the controller currently routes to station sensors which already cover many segments. But let me check which segments the station routes cover vs the total. The layout has tracks 1–12. Station sensors are at: 2 (T1), 5 (T2), 7 (T3), 9 (T4), 12 (T7), 16 (T6), 17 (T10), 18-21 (T11), 23 (T12), 24 (T9). That's tracks 1,2,3,4,6,7,9,10,11,12 — missing tracks 5 and 8. The bridge station has sensor 16 on T6 and sensor 9 on T4. 
+
+Let me enhance the destination picker to include non-station sensors that lie on underused track segments, ensuring all segments get traffic:The fallback already uses all reachable sensors. The station sensors cover most tracks, and the fallback ensures non-station sensors on tracks 5 and 8 (which have sensors 10, 11, 13, 14) can also be destinations. This should ensure all track segments get used over time.
+
+However, I want to be smarter about it. Let me add a track usage counter to prefer routes through underused segments:Now update the constructor to initialize `track_usage`:Now update `pick_destination` to score candidates by how many underused track segments they would use:Now update `plan_route` to increment track usage counters:Now I also need to fix the `candidates` variable being unused (the `mut` warning):89 tests, all clean. Let me add a test for the track usage feature:91 tests pass. Let me commit this enhancement:Now let me write the journal entry and update the roadmap:Now update the roadmap:Let me verify the final state:
+
 ## Session 6 — Boss-level train controller
 
 Built the core Boss Level system: a `TrainController` that continuously routes trains around the layout with collision avoidance (segment reservation), station dwell stops (15s at stations), adjacent-platform waiting, and track usage balancing to ensure all 12 segments get traffic. Replaced the placeholder `automatic_loop` with real integration: the `/automatic` endpoint now loads train positions, builds the controller, picks destinations (scoring by station priority, visit history, and underused track segments), plans collision-free routes, executes commands on the Pi, polls sensors for arrival, and dwells at stations. Added 14 new tests covering controller creation, station awareness, collision avoidance, dwell timing, adjacent platform waits, and track usage tracking. Next: test with real hardware and refine sensor polling / direction detection.

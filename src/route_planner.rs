@@ -138,6 +138,9 @@ pub fn plan_routes_with_graph(
 
 /// Convert a graph [`Route`] into a [`PlannedRoute`] with commands and description.
 fn route_to_plan(train_index: usize, route: &Route, graph: &TrackGraph) -> PlannedRoute {
+    use crate::layout::graph::TraverseDirection;
+    use std::collections::BTreeMap;
+
     let point_settings = route.point_settings();
     let track_ids = route.track_ids();
 
@@ -152,15 +155,26 @@ fn route_to_plan(train_index: usize, route: &Route, graph: &TrackGraph) -> Plann
         });
     }
 
-    // 2. Track power: each track in the route needs to be powered.
-    //    Direction (FWD/BWD) depends on whether the route traverses the track
-    //    in its along_fwd or reverse direction. For now, we use FWD as default
-    //    since the graph doesn't yet track traversal direction. The operator can
-    //    adjust; direction detection is a follow-up.
+    // 2. Track power: determine direction from the hop's traverse_direction.
+    //    For each track segment, use the direction from the first hop on that track.
+    let mut track_direction: BTreeMap<u8, TrackDirection> = BTreeMap::new();
+    for hop in &route.hops {
+        track_direction.entry(hop.track_id).or_insert_with(|| {
+            match hop.traverse_direction {
+                TraverseDirection::Fwd => TrackDirection::Fwd,
+                TraverseDirection::Bck => TrackDirection::Bck,
+            }
+        });
+    }
+
     for &tid in &track_ids {
+        let direction = track_direction
+            .get(&tid)
+            .copied()
+            .unwrap_or(TrackDirection::Fwd);
         commands.push(TrackCommand::SetTrackSpeed {
             track_id: tid,
-            direction: TrackDirection::Fwd,
+            direction,
             speed: DEFAULT_ROUTE_SPEED,
         });
     }
@@ -411,5 +425,63 @@ mod tests {
         assert_eq!(json["from_sensor"], 1);
         assert_eq!(json["to_sensor"], 5);
         assert!(json["commands"].is_array());
+    }
+
+    #[test]
+    fn forward_route_uses_fwd_direction() {
+        let graph = test_graph();
+        // Sensor 1 → 2 is forward along track 1's along_fwd
+        let trains = vec![TrainPosition {
+            sensor: 1,
+            destination: Some(2),
+        }];
+        let plans = plan_routes_with_graph(&trains, &graph).unwrap();
+        let track_cmds: Vec<_> = plans[0]
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                TrackCommand::SetTrackSpeed {
+                    track_id,
+                    direction,
+                    ..
+                } => Some((*track_id, *direction)),
+                _ => None,
+            })
+            .collect();
+        // Track 1 should be FWD (sensor 1 comes before sensor 2 in along_fwd)
+        assert!(
+            track_cmds.iter().any(|(tid, dir)| *tid == 1 && *dir == TrackDirection::Fwd),
+            "route 1→2 should use FWD on track 1, got: {:?}",
+            track_cmds
+        );
+    }
+
+    #[test]
+    fn backward_route_uses_bck_direction() {
+        let graph = test_graph();
+        // Sensor 2 → 1 is backward along track 1's along_fwd
+        let trains = vec![TrainPosition {
+            sensor: 2,
+            destination: Some(1),
+        }];
+        let plans = plan_routes_with_graph(&trains, &graph).unwrap();
+        let track_cmds: Vec<_> = plans[0]
+            .commands
+            .iter()
+            .filter_map(|c| match c {
+                TrackCommand::SetTrackSpeed {
+                    track_id,
+                    direction,
+                    ..
+                } => Some((*track_id, *direction)),
+                _ => None,
+            })
+            .collect();
+        // Track 1 should be BCK (sensor 2 comes after sensor 1 in along_fwd)
+        assert!(
+            track_cmds.iter().any(|(tid, dir)| *tid == 1 && *dir == TrackDirection::Bck),
+            "route 2→1 should use BCK on track 1, got: {:?}",
+            track_cmds
+        );
     }
 }

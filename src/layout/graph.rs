@@ -15,6 +15,18 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use crate::layout::model::{RouteNode, TrackLayout, TrackSegment};
 use crate::pi_client::PointDirection;
 
+/// Direction a train should power a track segment when traversing an edge.
+///
+/// `Fwd` means the train travels in the same direction as the `along_fwd` ordering
+/// of the track segment. `Bck` means the opposite direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TraverseDirection {
+    /// Same direction as the track's `along_fwd` ordering.
+    Fwd,
+    /// Opposite direction to `along_fwd`.
+    Bck,
+}
+
 /// One edge in the sensor graph: a direct hop from one sensor to another (or to a dead end).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SensorEdge {
@@ -29,6 +41,8 @@ pub struct SensorEdge {
     pub points: Vec<PointSetting>,
     /// True if this edge crosses a connection to a different track segment.
     pub crosses_connection: bool,
+    /// The direction a train should power this track segment when traversing this edge.
+    pub traverse_direction: TraverseDirection,
 }
 
 /// A point switch setting required for a hop.
@@ -285,21 +299,23 @@ fn walk_one_node(
     match node {
         RouteNode::Sensor { id } => {
             if let Some(prev) = last_sensor {
-                // Edge from prev → this sensor (forward)
+                // Edge from prev → this sensor (forward along the walk = Fwd)
                 edges.push(SensorEdge {
                     from: prev,
                     to: *id,
                     track_id: ctx.track_id,
                     points: ctx.points.clone(),
                     crosses_connection: ctx.crossed_connection,
+                    traverse_direction: TraverseDirection::Fwd,
                 });
-                // Edge from this sensor → prev (backward)
+                // Edge from this sensor → prev (backward = Bck)
                 edges.push(SensorEdge {
                     from: *id,
                     to: prev,
                     track_id: ctx.track_id,
                     points: ctx.points.clone(),
                     crosses_connection: ctx.crossed_connection,
+                    traverse_direction: TraverseDirection::Bck,
                 });
                 ctx.crossed_connection = false;
             }
@@ -330,12 +346,14 @@ fn walk_one_node(
                         let mut pts = ctx.points.clone();
                         pts.extend(pt_settings);
                         // Forward: this track's sensor → peer track's sensor
+                        // Walking along_fwd and crossing connection = FWD on this track
                         edges.push(SensorEdge {
                             from: prev,
                             to: target_sensor,
                             track_id: ctx.track_id,
                             points: pts.clone(),
                             crosses_connection: true,
+                            traverse_direction: TraverseDirection::Fwd,
                         });
                         // Reverse: peer track's sensor → this track's sensor
                         edges.push(SensorEdge {
@@ -344,6 +362,7 @@ fn walk_one_node(
                             track_id: ctx.track_id,
                             points: pts,
                             crosses_connection: true,
+                            traverse_direction: TraverseDirection::Bck,
                         });
                     }
                 }
@@ -395,6 +414,7 @@ fn walk_one_node(
                     track_id: ctx.track_id,
                     points: ctx.points.clone(),
                     crosses_connection: false,
+                    traverse_direction: TraverseDirection::Fwd,
                 });
             }
             last_sensor
@@ -530,12 +550,25 @@ fn build_coupler_edges(layout: &TrackLayout) -> Vec<SensorEdge> {
                         if sa != 0 && sb != 0 {
                             let mut pts = loc_a.points.clone();
                             pts.extend(&loc_b.points);
+                            // Direction on track a: if sa is before the coupler, train moves FWD
+                            let dir_a = if sa == loc_a.before {
+                                TraverseDirection::Fwd
+                            } else {
+                                TraverseDirection::Bck
+                            };
+                            // Direction on track b: if sb is after the coupler, train enters from BWD = FWD
+                            let dir_b = if sb == loc_b.after {
+                                TraverseDirection::Fwd
+                            } else {
+                                TraverseDirection::Bck
+                            };
                             edges.push(SensorEdge {
                                 from: sa,
                                 to: sb,
                                 track_id: loc_a.track_id,
                                 points: pts.clone(),
                                 crosses_connection: true,
+                                traverse_direction: dir_a,
                             });
                             edges.push(SensorEdge {
                                 from: sb,
@@ -543,6 +576,7 @@ fn build_coupler_edges(layout: &TrackLayout) -> Vec<SensorEdge> {
                                 track_id: loc_b.track_id,
                                 points: pts,
                                 crosses_connection: true,
+                                traverse_direction: dir_b,
                             });
                         }
                     }
@@ -900,5 +934,31 @@ along_fwd = [
             .point_settings()
             .iter()
             .any(|ps| ps.point_id == 1 && ps.direction == PointDirection::Branch));
+    }
+
+    #[test]
+    fn edge_traverse_direction_forward() {
+        let graph = canonical_graph();
+        // Sensor 1 → 2 on track 1: should be Fwd (1 comes before 2 in along_fwd)
+        let edges = graph.edges.get(&1).expect("edges from sensor 1");
+        let edge_to_2 = edges.iter().find(|e| e.to == 2).expect("edge 1→2");
+        assert_eq!(
+            edge_to_2.traverse_direction,
+            TraverseDirection::Fwd,
+            "1→2 should be Fwd"
+        );
+    }
+
+    #[test]
+    fn edge_traverse_direction_backward() {
+        let graph = canonical_graph();
+        // Sensor 2 → 1 on track 1: should be Bck (2 comes after 1 in along_fwd)
+        let edges = graph.edges.get(&2).expect("edges from sensor 2");
+        let edge_to_1 = edges.iter().find(|e| e.to == 1).expect("edge 2→1");
+        assert_eq!(
+            edge_to_1.traverse_direction,
+            TraverseDirection::Bck,
+            "2→1 should be Bck"
+        );
     }
 }

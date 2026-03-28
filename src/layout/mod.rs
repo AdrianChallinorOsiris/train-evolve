@@ -9,7 +9,7 @@ mod load;
 mod model;
 mod validate;
 
-pub use graph::{PointSetting, Route, SensorEdge, TrackGraph};
+pub use graph::{PointSetting, Route, SensorEdge, TrackGraph, TraverseDirection};
 pub use ids::{PointId, SensorId, TrackId};
 pub use load::LoadError;
 pub use model::{
