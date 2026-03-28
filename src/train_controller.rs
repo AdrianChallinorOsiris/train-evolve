@@ -88,6 +88,8 @@ pub struct TrainController {
     pub all_station_sensors: BTreeSet<u8>,
     /// All known sensor IDs in the layout.
     pub all_sensors: BTreeSet<u8>,
+    /// Track usage counter: track_id → number of times a train has been routed through it.
+    pub track_usage: HashMap<u8, u32>,
 }
 
 /// Errors from the controller.
@@ -130,6 +132,12 @@ impl TrainController {
 
         let all_sensors = graph.sensors.clone();
 
+        // Initialize track usage counters for all track segments
+        let mut track_usage: HashMap<u8, u32> = HashMap::new();
+        for track in &layout.tracks {
+            track_usage.insert(track.id, 0);
+        }
+
         Ok(Self {
             trains,
             graph,
@@ -137,6 +145,7 @@ impl TrainController {
             station_sensors,
             all_station_sensors,
             all_sensors,
+            track_usage,
         })
     }
 
@@ -161,7 +170,7 @@ impl TrainController {
     }
 
     /// Pick a destination for a train, avoiding sensors occupied by other trains
-    /// and preferring stations it hasn't visited recently.
+    /// and preferring routes through underused track segments and unvisited stations.
     pub fn pick_destination(&self, train_index: usize) -> Option<u8> {
         let train = &self.trains[train_index];
         let other_sensors: HashSet<u8> = self
@@ -171,53 +180,60 @@ impl TrainController {
             .map(|t| t.current_sensor)
             .collect();
 
-        // Prefer station sensors we haven't visited recently
-        let mut candidates: Vec<u8> = self
-            .all_station_sensors
+        let reserved = self.segments_reserved_by_others(train_index);
+
+        // Collect all candidate destinations (stations + non-stations for coverage)
+        let candidates: Vec<u8> = self
+            .all_sensors
             .iter()
             .copied()
             .filter(|&s| s != train.current_sensor)
             .filter(|s| !other_sensors.contains(s))
             .collect();
 
-        // Sort by least-recently-visited (or never visited = best)
-        candidates.sort_by_key(|&s| {
-            train
-                .visited_stations
-                .iter()
-                .rposition(|&v| v == s)
-                .map(|pos| pos as i64)
-                .unwrap_or(-1)
-        });
-
-        // Filter to reachable destinations where the route doesn't conflict
-        let reserved = self.segments_reserved_by_others(train_index);
+        // Score each candidate: lower = better
+        // Priority: (1) station bonus, (2) least-recently-visited, (3) route uses underused tracks
+        let mut best: Option<(u8, i64)> = None;
         for &candidate in &candidates {
             if let Some(route) = self.graph.find_route(train.current_sensor, candidate) {
                 let route_segments: BTreeSet<u8> =
                     route.hops.iter().map(|h| h.track_id).collect();
-                // Check no conflict with other trains' reserved segments
-                if route_segments.is_disjoint(&reserved) {
-                    return Some(candidate);
+                // Skip if route conflicts with reserved segments
+                if !route_segments.is_disjoint(&reserved) {
+                    continue;
+                }
+
+                // Score: lower is better
+                let mut score: i64 = 0;
+
+                // Prefer station sensors (bonus -1000)
+                if self.all_station_sensors.contains(&candidate) {
+                    score -= 1000;
+                }
+
+                // Prefer sensors we haven't visited recently (bonus -500 for never visited)
+                let visit_penalty = train
+                    .visited_stations
+                    .iter()
+                    .rposition(|&v| v == candidate)
+                    .map(|pos| (train.visited_stations.len() - pos) as i64)
+                    .unwrap_or(-500);
+                score += visit_penalty;
+
+                // Prefer routes through underused track segments
+                let route_usage: u32 = route_segments
+                    .iter()
+                    .map(|&tid| self.track_usage.get(&tid).copied().unwrap_or(0))
+                    .sum();
+                score += route_usage as i64;
+
+                if best.is_none() || score < best.unwrap().1 {
+                    best = Some((candidate, score));
                 }
             }
         }
 
-        // Fallback: try any reachable sensor (not just stations)
-        let reachable = self.graph.reachable_from(train.current_sensor);
-        for s in &reachable {
-            if !other_sensors.contains(s) && *s != train.current_sensor {
-                if let Some(route) = self.graph.find_route(train.current_sensor, *s) {
-                    let route_segments: BTreeSet<u8> =
-                        route.hops.iter().map(|h| h.track_id).collect();
-                    if route_segments.is_disjoint(&reserved) {
-                        return Some(*s);
-                    }
-                }
-            }
-        }
-
-        None
+        best.map(|(s, _)| s)
     }
 
     /// Plan a route for a train to a destination, reserving segments.
@@ -237,8 +253,11 @@ impl TrainController {
             ControllerError::Route("no route planned".to_string())
         })?;
 
-        // Reserve segments
+        // Reserve segments and track usage
         let segments: BTreeSet<u8> = plan.track_ids.iter().copied().collect();
+        for &tid in &segments {
+            *self.track_usage.entry(tid).or_insert(0) += 1;
+        }
         self.trains[train_index].reserved_segments = segments;
         self.trains[train_index].phase = TrainPhase::EnRoute {
             destination,
@@ -673,5 +692,30 @@ mod tests {
         ctrl.trains[1].reserved_segments.insert(3);
         let all = ctrl.all_reserved_segments();
         assert_eq!(all, BTreeSet::from([1, 2, 3]));
+    }
+
+    #[test]
+    fn track_usage_increments_on_plan() {
+        let mut ctrl = TrainController::new(&test_positions()).unwrap();
+        // All track usage should start at 0
+        for &count in ctrl.track_usage.values() {
+            assert_eq!(count, 0);
+        }
+        let dest = ctrl.pick_destination(0).unwrap();
+        let route = ctrl.plan_route(0, dest).unwrap();
+        // Track usage should be incremented for tracks in the route
+        for &tid in &route.track_ids {
+            assert!(
+                *ctrl.track_usage.get(&tid).unwrap_or(&0) > 0,
+                "track {tid} should have usage > 0 after planning"
+            );
+        }
+    }
+
+    #[test]
+    fn track_usage_initialized_for_all_tracks() {
+        let ctrl = TrainController::new(&test_positions()).unwrap();
+        // Should have entries for all 12 tracks
+        assert!(ctrl.track_usage.len() >= 12);
     }
 }
