@@ -21,6 +21,8 @@
 //! CLI: optional `--system <file>` for a custom system prompt; token usage shows
 //! per-turn and cumulative session totals.
 
+mod repl;
+
 use std::io::{self, BufRead, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -36,13 +38,9 @@ use yoyo::agent_runner::format_api_error_for_user;
 use yoyo::automation::AutomationController;
 use yoyo::evolve_session::EvolutionConfig;
 use yoyo::pi_client::DEFAULT_PI_URL;
-use yoyo::pi_client::{PiClient, PointDirection, TrackDirection};
+use yoyo::pi_client::PiClient;
 use yoyo::prompts::SYSTEM_PROMPT;
-use yoyo::service::{
-    initialise_json, journal_response, program_json, roadmap_response, route_json, serve, AppState,
-    JOURNAL_FILE, ROADMAP_FILE,
-};
-use yoyo::state::InitialiseRequest;
+use yoyo::service::{serve, AppState};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -94,7 +92,6 @@ REPL COMMANDS:
   /health              Same as GET /health
   /evolve              Same as POST /evolve
   /initialise <json>   Same as POST /initialise (JSON on one line)
-  /route <json>        Same as POST /route
   /program <json>      Same as POST /program
   /route <json>        Same as POST /route (compute routes for trains)
   /automatic           Same as POST /automatic
@@ -102,7 +99,7 @@ REPL COMMANDS:
   /stop                Same as POST /stop
   /pi status|health|sensors
   /pi sensors reset
-  /pi track speed <id> OFF|FWD|BCK <0-255>
+  /pi track speed <id> OFF|FWD|BCK <0-100>
   /pi track stop <id>
   /pi allstop
   /pi point <id> THRU|BRANCH
@@ -206,57 +203,71 @@ fn parse_bind(args: &[String]) -> Result<SocketAddr, String> {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // --help: print usage and exit
     if args.iter().any(|a| a == "--help" || a == "-h") {
         print_help();
         return;
     }
 
-    // --version: print version and exit
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("yoyo {}", VERSION);
         return;
     }
 
     if args.iter().any(|a| a == "--serve") {
-        let bind = match parse_bind(&args) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("yoyo: {e}");
-                std::process::exit(1);
-            }
-        };
-        let evolution = match evolution_config_from_env() {
-            Ok(c) => c,
-            Err(e) => {
-                eprintln!("yoyo: {e}");
-                std::process::exit(1);
-            }
-        };
-        let pi_url =
-            std::env::var("PI_URL").unwrap_or_else(|_| yoyo::pi_client::DEFAULT_PI_URL.to_string());
-        let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
-        let state = AppState {
-            evolve_lock: Arc::new(Mutex::new(())),
-            evolution,
-            automation: Arc::new(AutomationController::new()),
-            pi: Arc::new(PiClient::new(&pi_url)),
-            shutdown_tx: Arc::new(shutdown_tx),
-        };
-        eprintln!("yoyo: HTTP service on http://{bind}");
-        eprintln!("yoyo: POST /evolve /initialise /route /program /automatic /stop");
-        eprintln!("yoyo: GET  /health /journal /roadmap /automatic/status /pi/status /pi/health /pi/sensors");
-        eprintln!("yoyo: POST /pi/track/:id/speed /pi/track/:id/stop /pi/allstop /pi/point/:id /pi/sensor/:id /pi/sensors/reset");
-        if let Err(e) = serve(bind, state).await {
-            eprintln!("yoyo: server error: {e}");
-            std::process::exit(1);
-        }
-        // If we get here, the server shut down (e.g. after evolve requested restart).
-        eprintln!("yoyo: server stopped — restart the process to pick up new code");
-        std::process::exit(0);
+        run_serve(&args).await;
+        return;
     }
 
     // Default to REPL mode (also handles explicit --repl)
+    run_repl(&args).await;
+}
+
+// ---------------------------------------------------------------------------
+// --serve mode
+// ---------------------------------------------------------------------------
+
+async fn run_serve(args: &[String]) {
+    let bind = match parse_bind(args) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("yoyo: {e}");
+            std::process::exit(1);
+        }
+    };
+    let evolution = match evolution_config_from_env() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("yoyo: {e}");
+            std::process::exit(1);
+        }
+    };
+    let pi_url =
+        std::env::var("PI_URL").unwrap_or_else(|_| yoyo::pi_client::DEFAULT_PI_URL.to_string());
+    let (shutdown_tx, _shutdown_rx) = tokio::sync::watch::channel(false);
+    let state = AppState {
+        evolve_lock: Arc::new(Mutex::new(())),
+        evolution,
+        automation: Arc::new(AutomationController::new()),
+        pi: Arc::new(PiClient::new(&pi_url)),
+        shutdown_tx: Arc::new(shutdown_tx),
+    };
+    eprintln!("yoyo v{}: HTTP service on http://{bind}", VERSION);
+    eprintln!("yoyo: POST /evolve /initialise /route /program /automatic /stop");
+    eprintln!("yoyo: GET  /health /journal /roadmap /automatic/status /pi/status /pi/health /pi/sensors");
+    eprintln!("yoyo: POST /pi/track/:id/speed /pi/track/:id/stop /pi/allstop /pi/point/:id /pi/sensor/:id /pi/sensors/reset");
+    if let Err(e) = serve(bind, state).await {
+        eprintln!("yoyo: server error: {e}");
+        std::process::exit(1);
+    }
+    eprintln!("yoyo: server stopped — restart the process to pick up new code");
+    std::process::exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// --repl mode
+// ---------------------------------------------------------------------------
+
+async fn run_repl(args: &[String]) {
     let api_key = match std::env::var("ANTHROPIC_API_KEY").or_else(|_| std::env::var("API_KEY")) {
         Ok(k) => k,
         Err(_) => {
@@ -265,7 +276,6 @@ async fn main() {
         }
     };
 
-    // Early validation: warn (don't block) if key looks obviously wrong.
     if api_key.trim().is_empty() {
         eprintln!("yoyo: warning: API key is empty — API calls will fail");
     } else if api_key.len() < 10 {
@@ -282,7 +292,7 @@ async fn main() {
         .cloned()
         .unwrap_or_else(|| "claude-opus-4-6".into());
 
-    let (system_prompt, system_prompt_path) = match load_repl_system_prompt(&args) {
+    let (system_prompt, system_prompt_path) = match load_repl_system_prompt(args) {
         Ok(x) => x,
         Err(e) => {
             eprintln!("yoyo: {e}");
@@ -323,7 +333,7 @@ async fn main() {
     };
     let pi_url = std::env::var("PI_URL").unwrap_or_else(|_| DEFAULT_PI_URL.to_string());
     let (repl_shutdown_tx, _repl_shutdown_rx) = tokio::sync::watch::channel(false);
-    let mut repl_state = AppState {
+    let repl_state = AppState {
         evolve_lock: Arc::new(Mutex::new(())),
         evolution: EvolutionConfig {
             api_key: api_key.clone(),
@@ -378,25 +388,7 @@ async fn main() {
         match input {
             "/quit" | "/exit" => break,
             "/help" => {
-                println!("\n{BOLD}  REPL:{RESET}");
-                println!("  {GREEN}/help{RESET}               This list");
-                println!("  {GREEN}/clear{RESET}              Clear conversation history");
-                println!("  {GREEN}/model <name>{RESET}       Switch model (clears conversation)");
-                println!("  {GREEN}/quit{RESET}               Exit");
-                println!("\n{BOLD}  Service (same as HTTP --serve):{RESET}");
-                println!("  {GREEN}/health{RESET}  {GREEN}/journal{RESET}  {GREEN}/roadmap{RESET}  {GREEN}/evolve{RESET}  {GREEN}/automatic{RESET}  {GREEN}/automatic/status{RESET}  {GREEN}/stop{RESET}");
-                println!(
-                    "  {GREEN}/initialise <json>{RESET}   e.g. {{\"trains\":[{{\"sensor\":3}}]}}"
-                );
-                println!("  {GREEN}/program <json>{RESET}      track program placeholder JSON");
-                println!(
-                    "  {GREEN}/route <json>{RESET}        route planner — e.g. {{\"trains\":[{{\"sensor\":1,\"destination\":5}}]}}"
-                );
-                println!("  {GREEN}/pi status{RESET}  {GREEN}/pi health{RESET}  {GREEN}/pi sensors{RESET}  …");
-                println!();
-                println!("  {DIM}Ctrl+C during a response cancels the current turn.{RESET}");
-                println!("  {DIM}Other input is sent to the agent.{RESET}");
-                println!("  {DIM}Full list: run `yoyo --help`{RESET}\n");
+                repl::print_repl_help();
                 continue;
             }
             "/clear" => {
@@ -412,7 +404,6 @@ async fn main() {
             s if s.starts_with("/model ") => {
                 let new_model = s.trim_start_matches("/model ").trim();
                 model = new_model.to_string();
-                repl_state.evolution.model = new_model.to_string();
                 agent = Agent::new(AnthropicProvider)
                     .with_system_prompt(&system_prompt)
                     .with_model(new_model)
@@ -423,7 +414,7 @@ async fn main() {
                 continue;
             }
             s if s.starts_with('/') => {
-                if repl_service_dispatch(s, &repl_state).await {
+                if repl::service_dispatch(s, &repl_state).await {
                     println!();
                     continue;
                 }
@@ -435,123 +426,145 @@ async fn main() {
             _ => {}
         }
 
-        let mut rx = agent.prompt(input).await;
-        let mut last_usage = Usage::default();
-        let mut in_text = false;
-        let mut cancelled = false;
+        let (last_usage, cancelled) =
+            run_agent_turn(&mut agent, input).await;
 
-        loop {
-            let event = tokio::select! {
-                ev = rx.recv() => match ev {
-                    Some(e) => e,
-                    None => break,
-                },
-                _ = tokio::signal::ctrl_c() => {
-                    agent.abort();
-                    cancelled = true;
-                    // drain remaining events
-                    while rx.recv().await.is_some() {}
-                    break;
-                }
-            };
-            match event {
-                AgentEvent::ToolExecutionStart {
-                    tool_name, args, ..
-                } => {
-                    if in_text {
-                        println!();
-                        in_text = false;
-                    }
-                    let summary = match tool_name.as_str() {
-                        "bash" => {
-                            let cmd = args
-                                .get("command")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("...");
-                            format!("$ {}", truncate(cmd, 80))
-                        }
-                        "read_file" => {
-                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                            format!("read {}", path)
-                        }
-                        "write_file" => {
-                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                            format!("write {}", path)
-                        }
-                        "edit_file" => {
-                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                            format!("edit {}", path)
-                        }
-                        "list_files" => {
-                            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
-                            format!("ls {}", path)
-                        }
-                        "search" => {
-                            let pat = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
-                            format!("search '{}'", truncate(pat, 60))
-                        }
-                        _ => tool_name.clone(),
-                    };
-                    print!("{YELLOW}  ▶ {summary}{RESET}");
-                    io::stdout().flush().ok();
-                }
-                AgentEvent::ToolExecutionEnd { is_error, .. } => {
-                    if is_error {
-                        println!(" {RED}✗{RESET}");
-                    } else {
-                        println!(" {GREEN}✓{RESET}");
-                    }
-                }
-                AgentEvent::MessageUpdate {
-                    delta: StreamDelta::Text { delta },
-                    ..
-                } => {
-                    if !in_text {
-                        println!();
-                        in_text = true;
-                    }
-                    print!("{}", delta);
-                    io::stdout().flush().ok();
-                }
-                AgentEvent::AgentEnd { messages } => {
-                    for msg in messages.iter().rev() {
-                        if let AgentMessage::Llm(Message::Assistant {
-                            usage,
-                            stop_reason,
-                            error_message,
-                            ..
-                        }) = msg
-                        {
-                            last_usage = usage.clone();
-                            if *stop_reason == StopReason::Error {
-                                if in_text {
-                                    println!();
-                                    in_text = false;
-                                }
-                                let err = error_message.as_deref().unwrap_or("unknown API error");
-                                let err = format_api_error_for_user(err);
-                                eprintln!("\n{RED}  ⚠ API error: {err}{RESET}");
-                            }
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if in_text {
-            println!();
-        }
+        print_turn_usage(&last_usage, &mut session_tokens_in, &mut session_tokens_out);
         if cancelled {
             println!("\n{YELLOW}  ⚠ interrupted{RESET}");
         }
-        print_turn_usage(&last_usage, &mut session_tokens_in, &mut session_tokens_out);
         println!();
     }
 
     println!("\n{DIM}  bye 👋{RESET}\n");
 }
+
+// ---------------------------------------------------------------------------
+// Agent turn (streaming + tool feedback)
+// ---------------------------------------------------------------------------
+
+/// Run one agent turn: stream text, show tool calls, handle Ctrl+C.
+/// Returns the usage stats and whether the turn was cancelled.
+async fn run_agent_turn(agent: &mut Agent, input: &str) -> (Usage, bool) {
+    let mut rx = agent.prompt(input).await;
+    let mut last_usage = Usage::default();
+    let mut in_text = false;
+    let mut cancelled = false;
+
+    loop {
+        let event = tokio::select! {
+            ev = rx.recv() => match ev {
+                Some(e) => e,
+                None => break,
+            },
+            _ = tokio::signal::ctrl_c() => {
+                agent.abort();
+                cancelled = true;
+                while rx.recv().await.is_some() {}
+                break;
+            }
+        };
+        match event {
+            AgentEvent::ToolExecutionStart {
+                tool_name, args, ..
+            } => {
+                if in_text {
+                    println!();
+                    in_text = false;
+                }
+                let summary = tool_summary(&tool_name, &args);
+                print!("{YELLOW}  ▶ {summary}{RESET}");
+                io::stdout().flush().ok();
+            }
+            AgentEvent::ToolExecutionEnd { is_error, .. } => {
+                if is_error {
+                    println!(" {RED}✗{RESET}");
+                } else {
+                    println!(" {GREEN}✓{RESET}");
+                }
+            }
+            AgentEvent::MessageUpdate {
+                delta: StreamDelta::Text { delta },
+                ..
+            } => {
+                if !in_text {
+                    println!();
+                    in_text = true;
+                }
+                print!("{}", delta);
+                io::stdout().flush().ok();
+            }
+            AgentEvent::AgentEnd { messages } => {
+                for msg in messages.iter().rev() {
+                    if let AgentMessage::Llm(Message::Assistant {
+                        usage,
+                        stop_reason,
+                        error_message,
+                        ..
+                    }) = msg
+                    {
+                        last_usage = usage.clone();
+                        if *stop_reason == StopReason::Error {
+                            if in_text {
+                                println!();
+                                in_text = false;
+                            }
+                            let err = error_message.as_deref().unwrap_or("unknown API error");
+                            let err = format_api_error_for_user(err);
+                            eprintln!("\n{RED}  ⚠ API error: {err}{RESET}");
+                        }
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if in_text {
+        println!();
+    }
+
+    (last_usage, cancelled)
+}
+
+/// One-line summary of a tool call for the REPL.
+fn tool_summary(tool_name: &str, args: &serde_json::Value) -> String {
+    match tool_name {
+        "bash" => {
+            let cmd = args
+                .get("command")
+                .and_then(|v| v.as_str())
+                .unwrap_or("...");
+            format!("$ {}", truncate(cmd, 80))
+        }
+        "read_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("read {}", path)
+        }
+        "write_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("write {}", path)
+        }
+        "edit_file" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("edit {}", path)
+        }
+        "list_files" => {
+            let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+            format!("ls {}", path)
+        }
+        "search" => {
+            let pat = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+            format!("search '{}'", truncate(pat, 60))
+        }
+        _ => tool_name.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
 
 /// If `git rev-parse` works, return the current branch name for the REPL prompt.
 fn git_branch_for_prompt() -> Option<String> {
@@ -567,258 +580,6 @@ fn git_branch_for_prompt() -> Option<String> {
         None
     } else {
         Some(s)
-    }
-}
-
-fn print_json_pretty(v: &serde_json::Value) {
-    match serde_json::to_string_pretty(v) {
-        Ok(s) => println!("{s}"),
-        Err(_) => println!("{}", v),
-    }
-}
-
-fn parse_track_direction(s: &str) -> Result<TrackDirection, String> {
-    match s.to_ascii_uppercase().as_str() {
-        "OFF" => Ok(TrackDirection::Off),
-        "FWD" => Ok(TrackDirection::Fwd),
-        "BCK" => Ok(TrackDirection::Bck),
-        _ => Err(format!("expected OFF|FWD|BCK, got {s:?}")),
-    }
-}
-
-fn parse_point_direction(s: &str) -> Result<PointDirection, String> {
-    match s.to_ascii_uppercase().as_str() {
-        "THRU" => Ok(PointDirection::Thru),
-        "BRANCH" => Ok(PointDirection::Branch),
-        _ => Err(format!("expected THRU|BRANCH, got {s:?}")),
-    }
-}
-
-fn parse_bool_word(s: &str) -> Result<bool, String> {
-    match s.to_ascii_lowercase().as_str() {
-        "true" | "1" | "yes" => Ok(true),
-        "false" | "0" | "no" => Ok(false),
-        _ => Err(format!("expected true|false, got {s:?}")),
-    }
-}
-
-async fn repl_pi_dispatch(line: &str, state: &AppState) -> Result<(), String> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.first().copied() != Some("/pi") {
-        return Err("expected line to start with /pi".into());
-    }
-    if parts.len() < 2 {
-        return Err("/pi: add a subcommand (status, health, sensors, track, …)".into());
-    }
-    match parts[1] {
-        "status" => {
-            let v = state.pi_status_json().await.map_err(|e| e.to_string())?;
-            print_json_pretty(&v);
-            Ok(())
-        }
-        "health" => {
-            let v = state.pi_health_json().await.map_err(|e| e.to_string())?;
-            print_json_pretty(&v);
-            Ok(())
-        }
-        "sensors" => {
-            if parts.len() == 3 && parts[2] == "reset" {
-                let v = state
-                    .pi_sensors_reset_json()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json_pretty(&v);
-            } else if parts.len() == 2 {
-                let v = state
-                    .pi_sensors_list_json()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json_pretty(&v);
-            } else {
-                return Err(
-                    "/pi sensors [reset] — use `/pi sensors` or `/pi sensors reset`".into(),
-                );
-            }
-            Ok(())
-        }
-        "track" => {
-            if parts.len() >= 3 && parts[2] == "speed" {
-                if parts.len() < 6 {
-                    return Err(
-                        "/pi track speed <id> OFF|FWD|BCK <speed> — not enough arguments".into(),
-                    );
-                }
-                let id = parts[3]
-                    .parse::<u8>()
-                    .map_err(|_| format!("invalid track id {:?}", parts[3]))?;
-                let dir = parse_track_direction(parts[4])?;
-                let speed = parts[5]
-                    .parse::<u8>()
-                    .map_err(|_| format!("invalid speed {:?}", parts[5]))?;
-                let v = state
-                    .pi_track_speed_json(id, dir, speed)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json_pretty(&v);
-                Ok(())
-            } else if parts.len() >= 3 && parts[2] == "stop" {
-                if parts.len() < 4 {
-                    return Err("/pi track stop <id>".into());
-                }
-                let id = parts[3]
-                    .parse::<u8>()
-                    .map_err(|_| format!("invalid track id {:?}", parts[3]))?;
-                let v = state
-                    .pi_track_stop_json(id)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                print_json_pretty(&v);
-                Ok(())
-            } else {
-                Err("/pi track speed … or /pi track stop …".into())
-            }
-        }
-        "allstop" => {
-            let v = state.pi_all_stop_json().await.map_err(|e| e.to_string())?;
-            print_json_pretty(&v);
-            Ok(())
-        }
-        "point" => {
-            if parts.len() < 4 {
-                return Err("/pi point <id> THRU|BRANCH".into());
-            }
-            let id = parts[2]
-                .parse::<u8>()
-                .map_err(|_| format!("invalid point id {:?}", parts[2]))?;
-            let dir = parse_point_direction(parts[3])?;
-            let v = state
-                .pi_point_json(id, dir)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json_pretty(&v);
-            Ok(())
-        }
-        "sensor" => {
-            if parts.len() < 4 {
-                return Err("/pi sensor <id> true|false".into());
-            }
-            let id = parts[2]
-                .parse::<u8>()
-                .map_err(|_| format!("invalid sensor id {:?}", parts[2]))?;
-            let value = parse_bool_word(parts[3])?;
-            let v = state
-                .pi_sensor_json(id, value)
-                .await
-                .map_err(|e| e.to_string())?;
-            print_json_pretty(&v);
-            Ok(())
-        }
-        other => Err(format!("unknown /pi subcommand {other:?}")),
-    }
-}
-
-/// Returns `true` if `line` was a service command (including invalid ones we reported).
-async fn repl_service_dispatch(line: &str, state: &AppState) -> bool {
-    let line = line.trim();
-    match line {
-        "/health" => {
-            let v = state.health_json().await;
-            print_json_pretty(&v);
-            true
-        }
-        "/journal" => {
-            match tokio::fs::read_to_string(JOURNAL_FILE).await {
-                Ok(t) => print_json_pretty(&journal_response(&t)),
-                Err(e) => eprintln!("{RED}  {JOURNAL_FILE}: {e}{RESET}"),
-            }
-            true
-        }
-        "/roadmap" => {
-            match tokio::fs::read_to_string(ROADMAP_FILE).await {
-                Ok(t) => print_json_pretty(&roadmap_response(&t)),
-                Err(e) => eprintln!("{RED}  {ROADMAP_FILE}: {e}{RESET}"),
-            }
-            true
-        }
-        "/evolve" => {
-            match state.evolve_json().await {
-                Ok(v) => print_json_pretty(&v),
-                Err(e) => eprintln!("{RED}  evolve failed: {e}{RESET}"),
-            }
-            true
-        }
-        "/automatic" => {
-            match state.automatic_start_json().await {
-                Ok(v) => print_json_pretty(&v),
-                Err(e) => eprintln!("{RED}  automatic: {e}{RESET}"),
-            }
-            true
-        }
-        "/automatic/status" => {
-            let v = state.automatic_status_json().await;
-            print_json_pretty(&v);
-            true
-        }
-        "/stop" => {
-            match state.automatic_stop_json().await {
-                Ok(v) => print_json_pretty(&v),
-                Err(e) => eprintln!("{RED}  stop: {e}{RESET}"),
-            }
-            true
-        }
-        s if s.starts_with("/initialise") => {
-            let rest = s["/initialise".len()..].trim();
-            if rest.is_empty() {
-                eprintln!("{RED}  usage: /initialise {{\"trains\":[{{\"sensor\":3}}]}}{RESET}");
-                return true;
-            }
-            match serde_json::from_str::<InitialiseRequest>(rest) {
-                Ok(body) => match initialise_json(body) {
-                    Ok(v) => print_json_pretty(&v),
-                    Err(e) => eprintln!("{RED}  initialise: {e}{RESET}"),
-                },
-                Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
-            }
-            true
-        }
-        s if s.starts_with("/program") => {
-            let rest = s["/program".len()..].trim();
-            if rest.is_empty() {
-                eprintln!("{RED}  usage: /program {{ ... }}  (JSON payload){RESET}");
-                return true;
-            }
-            match serde_json::from_str::<serde_json::Value>(rest) {
-                Ok(payload) => match program_json(payload) {
-                    Ok(v) => print_json_pretty(&v),
-                    Err(e) => eprintln!("{RED}  program: {e}{RESET}"),
-                },
-                Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
-            }
-            true
-        }
-        s if s.starts_with("/route") => {
-            let rest = s["/route".len()..].trim();
-            if rest.is_empty() {
-                eprintln!("{RED}  usage: /route {{\"trains\":[{{\"sensor\":1,\"destination\":5}}]}}{RESET}");
-                return true;
-            }
-            match serde_json::from_str::<InitialiseRequest>(rest) {
-                Ok(body) => match route_json(body) {
-                    Ok(v) => print_json_pretty(&v),
-                    Err(e) => eprintln!("{RED}  route: {e}{RESET}"),
-                },
-                Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
-            }
-            true
-        }
-        s if s.starts_with("/pi") => {
-            match repl_pi_dispatch(s, state).await {
-                Ok(()) => {}
-                Err(e) => eprintln!("{RED}  {e}{RESET}"),
-            }
-            true
-        }
-        _ => false,
     }
 }
 
@@ -921,7 +682,6 @@ mod tests {
 
     #[test]
     fn test_version_constant() {
-        // VERSION should match Cargo.toml; ensure it parses as semver
         let parts: Vec<&str> = VERSION.split('.').collect();
         assert_eq!(parts.len(), 3, "VERSION should be semver (x.y.z)");
         for part in &parts {
@@ -930,5 +690,23 @@ mod tests {
                 "each semver component should be a number"
             );
         }
+    }
+
+    #[test]
+    fn tool_summary_bash() {
+        let args = serde_json::json!({"command": "ls -la"});
+        assert_eq!(tool_summary("bash", &args), "$ ls -la");
+    }
+
+    #[test]
+    fn tool_summary_read_file() {
+        let args = serde_json::json!({"path": "src/main.rs"});
+        assert_eq!(tool_summary("read_file", &args), "read src/main.rs");
+    }
+
+    #[test]
+    fn tool_summary_unknown_tool() {
+        let args = serde_json::json!({});
+        assert_eq!(tool_summary("custom_tool", &args), "custom_tool");
     }
 }
