@@ -36,6 +36,9 @@ if ! cargo test; then ci_die "cargo test"; fi
 echo "==> cargo clippy --all-targets -- -D warnings"
 if ! cargo clippy --all-targets -- -D warnings; then ci_die "cargo clippy"; fi
 
+echo "==> cargo fmt "
+if ! cargo fmt; then ci_die "cargo fmt"; fi
+
 echo "==> cargo fmt -- --check"
 if ! cargo fmt -- --check; then ci_die "cargo fmt --check"; fi
 
