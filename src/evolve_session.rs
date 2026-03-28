@@ -12,6 +12,7 @@ use yoagent::Usage;
 
 use crate::agent_runner::{format_api_error_for_user, run_prompt};
 use crate::prompts::SYSTEM_PROMPT;
+use crate::state::EvolutionStats;
 use thiserror::Error;
 
 /// Configuration for a single evolution run.
@@ -294,6 +295,20 @@ pub async fn run_evolution(cfg: &EvolutionConfig) -> Result<EvolutionOutcome, Ev
     // Increment session counter
     let next_session = session + 1;
     write_day_count(next_session).map_err(|e| EvolutionError::Agent(e.to_string()))?;
+
+    // Record cumulative evolution statistics
+    let version = env!("CARGO_PKG_VERSION");
+    match EvolutionStats::load() {
+        Ok(mut stats) => {
+            stats.record_session(usage.input, usage.output, version, &date);
+            if let Err(e) = stats.save() {
+                warnings.push(format!("failed to save evolution stats: {e}"));
+            }
+        }
+        Err(e) => {
+            warnings.push(format!("failed to load evolution stats: {e}"));
+        }
+    }
 
     // 5–8. ./commit does: build, test, clippy, fmt check, version bump, git add -A, commit, push
     let commit_msg = format!("Session {session}: wrap-up");

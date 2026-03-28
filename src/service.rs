@@ -20,7 +20,7 @@ use crate::automation::AutomationError;
 use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
 use crate::pi_client::{PiClient, PointDirection, TrackDirection};
 use crate::route_planner;
-use crate::state::{self, InitialiseRequest, StateError};
+use crate::state::{self, EvolutionStats, InitialiseRequest, StateError};
 use crate::train_controller;
 
 /// Sender used by the evolve handler to tell the server loop to shut down for a restart.
@@ -85,10 +85,28 @@ impl AppState {
     /// Same payload as `GET /health`.
     pub async fn health_json(&self) -> serde_json::Value {
         let automatic = self.automation.is_running().await;
-        json!({
+        let version = env!("CARGO_PKG_VERSION");
+
+        let mut health = json!({
             "status": "ok",
+            "version": version,
             "automatic": automatic,
-        })
+        });
+
+        // Include cumulative evolution stats if available
+        if let Ok(stats) = EvolutionStats::load() {
+            if stats.sessions_completed > 0 {
+                health["evolution"] = json!({
+                    "sessions_completed": stats.sessions_completed,
+                    "total_tokens_in": stats.total_tokens_in,
+                    "total_tokens_out": stats.total_tokens_out,
+                    "last_session_at": stats.last_session_at,
+                    "last_version": stats.last_version,
+                });
+            }
+        }
+
+        health
     }
 
     /// Same payload as successful `POST /evolve`.
