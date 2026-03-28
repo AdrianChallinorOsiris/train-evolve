@@ -538,6 +538,14 @@ pub async fn run_automatic(
                                 eprintln!("yoyo: train {} route planning error: {e}", i);
                             }
                         }
+                    } else if tick_count.is_multiple_of(20) {
+                        // Log periodically so the operator sees why a train is stuck
+                        let sensor = controller.trains[i].current_sensor;
+                        let reserved = controller.segments_reserved_by_others(i);
+                        eprintln!(
+                            "yoyo: train {} at S{} idle — no reachable destination (reserved by others: {:?})",
+                            i, sensor, reserved
+                        );
                     }
                 }
                 TrainPhase::EnRoute { destination, route } => {
