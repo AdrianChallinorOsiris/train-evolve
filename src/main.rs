@@ -98,6 +98,7 @@ REPL COMMANDS:
   /program <json>      Same as POST /program
   /route <json>        Same as POST /route (compute routes for trains)
   /automatic           Same as POST /automatic
+  /automatic/status    Same as GET /automatic/status
   /stop                Same as POST /stop
   /pi status|health|sensors
   /pi sensors reset
@@ -117,6 +118,7 @@ HTTP (--serve) ENDPOINTS:
   POST /route/execute  Compute routes and execute on Pi hardware
   POST /program        Upload track program
   POST /automatic      Start automatic mode
+  GET  /automatic/status  Train positions, phases, and track usage
   POST /stop           Stop automatic mode
   GET  /pi/status      Live track/point/sensor status from Pi
   GET  /pi/health      Pi hardware health
@@ -243,7 +245,7 @@ async fn main() {
         };
         eprintln!("yoyo: HTTP service on http://{bind}");
         eprintln!("yoyo: POST /evolve /initialise /route /program /automatic /stop");
-        eprintln!("yoyo: GET  /health /journal /roadmap /pi/status /pi/health /pi/sensors");
+        eprintln!("yoyo: GET  /health /journal /roadmap /automatic/status /pi/status /pi/health /pi/sensors");
         eprintln!("yoyo: POST /pi/track/:id/speed /pi/track/:id/stop /pi/allstop /pi/point/:id /pi/sensor/:id /pi/sensors/reset");
         if let Err(e) = serve(bind, state).await {
             eprintln!("yoyo: server error: {e}");
@@ -382,7 +384,7 @@ async fn main() {
                 println!("  {GREEN}/model <name>{RESET}       Switch model (clears conversation)");
                 println!("  {GREEN}/quit{RESET}               Exit");
                 println!("\n{BOLD}  Service (same as HTTP --serve):{RESET}");
-                println!("  {GREEN}/health{RESET}  {GREEN}/journal{RESET}  {GREEN}/roadmap{RESET}  {GREEN}/evolve{RESET}  {GREEN}/automatic{RESET}  {GREEN}/stop{RESET}");
+                println!("  {GREEN}/health{RESET}  {GREEN}/journal{RESET}  {GREEN}/roadmap{RESET}  {GREEN}/evolve{RESET}  {GREEN}/automatic{RESET}  {GREEN}/automatic/status{RESET}  {GREEN}/stop{RESET}");
                 println!(
                     "  {GREEN}/initialise <json>{RESET}   e.g. {{\"trains\":[{{\"sensor\":3}}]}}"
                 );
@@ -750,6 +752,11 @@ async fn repl_service_dispatch(line: &str, state: &AppState) -> bool {
                 Ok(v) => print_json_pretty(&v),
                 Err(e) => eprintln!("{RED}  automatic: {e}{RESET}"),
             }
+            true
+        }
+        "/automatic/status" => {
+            let v = state.automatic_status_json().await;
+            print_json_pretty(&v);
             true
         }
         "/stop" => {

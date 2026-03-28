@@ -12,7 +12,7 @@ use tokio::sync::Mutex;
 
 use crate::pi_client::PiClient;
 use crate::state::{self, InitialiseRequest, StateError};
-use crate::train_controller;
+use crate::train_controller::{self, AutomaticStatus, StatusSlot};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -37,6 +37,8 @@ struct AutomationInner {
 /// Shared controller for `/automatic` and `/stop`.
 pub struct AutomationController {
     inner: Mutex<AutomationInner>,
+    /// Observable status, updated every tick by the running loop.
+    status: StatusSlot,
 }
 
 impl Default for AutomationController {
@@ -52,6 +54,7 @@ impl AutomationController {
                 join: None,
                 cancel: None,
             }),
+            status: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -73,9 +76,10 @@ impl AutomationController {
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
         let trains = init.trains.clone();
+        let status_slot = self.status.clone();
 
         let join = tokio::spawn(async move {
-            if let Err(e) = train_controller::run_automatic(pi, trains, flag).await {
+            if let Err(e) = train_controller::run_automatic(pi, trains, flag, status_slot).await {
                 eprintln!("yoyo: automatic mode error: {e}");
             }
         });
@@ -109,6 +113,12 @@ impl AutomationController {
             .as_ref()
             .map(|h| !h.is_finished())
             .unwrap_or(false)
+    }
+
+    /// Get a snapshot of the current automatic controller state (trains, phases, track usage).
+    /// Returns `None` if automatic mode is not running or hasn't reported yet.
+    pub async fn status(&self) -> Option<AutomaticStatus> {
+        self.status.lock().await.clone()
     }
 }
 

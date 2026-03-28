@@ -1,5 +1,5 @@
-//! HTTP service: `/evolve`, `/initialise`, `/program`, `/automatic`, `/stop`, `/health`,
-//! `/journal`, `/roadmap`, `/pi/status`, `/pi/health`, `/pi/sensors`,
+//! HTTP service: `/evolve`, `/initialise`, `/program`, `/automatic`, `/automatic/status`, `/stop`,
+//! `/health`, `/journal`, `/roadmap`, `/pi/status`, `/pi/health`, `/pi/sensors`,
 //! `/pi/track/:id/speed`, `/pi/track/:id/stop`, `/pi/allstop`,
 //! `/pi/point/:id`, `/pi/sensor/:id`, `/pi/sensors/reset`.
 
@@ -50,6 +50,7 @@ pub async fn serve(bind: SocketAddr, state: AppState) -> Result<(), std::io::Err
         .route("/route", post(route_handler))
         .route("/route/execute", post(route_execute_handler))
         .route("/automatic", post(automatic_handler))
+        .route("/automatic/status", get(automatic_status_handler))
         .route("/stop", post(stop_handler))
         // Pi read-only proxies
         .route("/pi/status", get(pi_status_handler))
@@ -127,7 +128,7 @@ impl AppState {
         self.automation.start(self.pi.clone()).await?;
         Ok(json!({
             "status": "running",
-            "message": "boss-level automatic mode started (timetable loop is a placeholder until Pi/routing integration)",
+            "message": "automatic mode started — trains routing continuously with collision avoidance and station stops",
         }))
     }
 
@@ -138,6 +139,21 @@ impl AppState {
             "status": "stopped",
             "message": "automation stopped; train positions restored from snapshot taken at /automatic start",
         }))
+    }
+
+    /// Same as `GET /automatic/status`.
+    pub async fn automatic_status_json(&self) -> serde_json::Value {
+        let running = self.automation.is_running().await;
+        match self.automation.status().await {
+            Some(status) => {
+                serde_json::to_value(status).unwrap_or_else(|e| json!({"error": e.to_string()}))
+            }
+            None => json!({
+                "running": running,
+                "trains": [],
+                "message": if running { "starting up — no status yet" } else { "automatic mode not running" },
+            }),
+        }
     }
 
     /// Same as `GET /pi/status`.
@@ -433,6 +449,10 @@ async fn stop_handler(
         .await
         .map_err(|e: AutomationError| automation_status(&e))
         .map(Json)
+}
+
+async fn automatic_status_handler(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(state.automatic_status_json().await)
 }
 
 fn automation_status(e: &AutomationError) -> (StatusCode, String) {

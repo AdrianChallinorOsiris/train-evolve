@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
 use crate::layout::graph::TrackGraph;
 use crate::layout::TrackLayout;
 use crate::pi_client::{PiClient, PiError};
@@ -101,6 +103,86 @@ pub enum ControllerError {
     Pi(#[from] PiError),
     #[error("route error: {0}")]
     Route(String),
+}
+
+// ---------------------------------------------------------------------------
+// Observable status (serializable snapshot for /automatic/status)
+// ---------------------------------------------------------------------------
+
+/// Serializable snapshot of one train's state.
+#[derive(Debug, Clone, Serialize)]
+pub struct TrainSnapshot {
+    pub index: usize,
+    pub current_sensor: u8,
+    pub phase: String,
+    /// For `en_route`: the destination sensor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination: Option<u8>,
+    /// For `dwelling`: the station name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub station: Option<String>,
+    /// For `dwelling`: seconds remaining.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dwell_remaining_secs: Option<u64>,
+    pub reserved_segments: Vec<u8>,
+    pub visited_stations: Vec<u8>,
+}
+
+/// Serializable snapshot of the entire automatic controller.
+#[derive(Debug, Clone, Serialize)]
+pub struct AutomaticStatus {
+    pub running: bool,
+    pub trains: Vec<TrainSnapshot>,
+    pub track_usage: HashMap<u8, u32>,
+    pub tick_count: u64,
+}
+
+impl TrainController {
+    /// Create a serializable status snapshot.
+    pub fn snapshot(&self, tick_count: u64) -> AutomaticStatus {
+        let trains = self
+            .trains
+            .iter()
+            .map(|t| {
+                let (phase_str, destination, station, dwell_remaining) = match &t.phase {
+                    TrainPhase::Idle => ("idle".to_string(), None, None, None),
+                    TrainPhase::EnRoute { destination, .. } => {
+                        ("en_route".to_string(), Some(*destination), None, None)
+                    }
+                    TrainPhase::Dwelling {
+                        station_name,
+                        until,
+                        ..
+                    } => {
+                        let remaining = until.saturating_duration_since(Instant::now());
+                        (
+                            "dwelling".to_string(),
+                            None,
+                            Some(station_name.clone()),
+                            Some(remaining.as_secs()),
+                        )
+                    }
+                };
+                TrainSnapshot {
+                    index: t.index,
+                    current_sensor: t.current_sensor,
+                    phase: phase_str,
+                    destination,
+                    station,
+                    dwell_remaining_secs: dwell_remaining,
+                    reserved_segments: t.reserved_segments.iter().copied().collect(),
+                    visited_stations: t.visited_stations.clone(),
+                }
+            })
+            .collect();
+
+        AutomaticStatus {
+            running: true,
+            trains,
+            track_usage: self.track_usage.clone(),
+            tick_count,
+        }
+    }
 }
 
 impl TrainController {
@@ -196,8 +278,7 @@ impl TrainController {
         let mut best: Option<(u8, i64)> = None;
         for &candidate in &candidates {
             if let Some(route) = self.graph.find_route(train.current_sensor, candidate) {
-                let route_segments: BTreeSet<u8> =
-                    route.hops.iter().map(|h| h.track_id).collect();
+                let route_segments: BTreeSet<u8> = route.hops.iter().map(|h| h.track_id).collect();
                 // Skip if route conflicts with reserved segments
                 if !route_segments.is_disjoint(&reserved) {
                     continue;
@@ -249,9 +330,10 @@ impl TrainController {
         }];
         let plans = route_planner::plan_routes_with_graph(&trains_for_planner, &self.graph)
             .map_err(|e| ControllerError::Route(e.to_string()))?;
-        let plan = plans.into_iter().next().ok_or_else(|| {
-            ControllerError::Route("no route planned".to_string())
-        })?;
+        let plan = plans
+            .into_iter()
+            .next()
+            .ok_or_else(|| ControllerError::Route("no route planned".to_string()))?;
 
         // Reserve segments and track usage
         let segments: BTreeSet<u8> = plan.track_ids.iter().copied().collect();
@@ -268,10 +350,7 @@ impl TrainController {
     }
 
     /// Execute a planned route's commands on the Pi hardware.
-    pub async fn execute_route(
-        pi: &PiClient,
-        route: &PlannedRoute,
-    ) -> Result<(), ControllerError> {
+    pub async fn execute_route(pi: &PiClient, route: &PlannedRoute) -> Result<(), ControllerError> {
         for cmd in &route.commands {
             execute_command(pi, cmd).await?;
         }
@@ -331,7 +410,12 @@ impl TrainController {
         // Find which station this sensor belongs to
         if let Some(station_name) = self.station_sensors.get(&sensor) {
             // Find the station definition
-            if let Some(station) = self.layout.stations.iter().find(|s| &s.name == station_name) {
+            if let Some(station) = self
+                .layout
+                .stations
+                .iter()
+                .find(|s| &s.name == station_name)
+            {
                 // Check if any other train is en route to a sensor in this same station
                 for other in &self.trains {
                     if other.index == train_index {
@@ -387,16 +471,23 @@ fn load_layout() -> Result<TrackLayout, ControllerError> {
 // The main automatic control loop
 // ---------------------------------------------------------------------------
 
+/// Shared slot for observable status — updated by the automatic loop, read by the status endpoint.
+pub type StatusSlot = Arc<tokio::sync::Mutex<Option<AutomaticStatus>>>;
+
 /// Run the boss-level automatic control loop.
 ///
 /// This continuously routes trains around the layout, avoiding collisions,
 /// stopping at stations, and waiting for adjacent platform arrivals.
+/// The `status_slot` is updated on every tick so the `/automatic/status` endpoint
+/// can report current train positions.
 pub async fn run_automatic(
     pi: Arc<PiClient>,
     initial_trains: Vec<TrainPosition>,
     cancel: Arc<AtomicBool>,
+    status_slot: StatusSlot,
 ) -> Result<(), ControllerError> {
     let mut controller = TrainController::new(&initial_trains)?;
+    let mut tick_count: u64 = 0;
 
     eprintln!(
         "yoyo: automatic mode started with {} train(s), {} station sensors",
@@ -427,16 +518,16 @@ pub async fn run_automatic(
                         match controller.plan_route(i, dest) {
                             Ok(route) => {
                                 let sensor = controller.trains[i].current_sensor;
-                                let station = controller.station_sensors.get(&dest)
+                                let station = controller
+                                    .station_sensors
+                                    .get(&dest)
                                     .map(|s| format!(" ({})", s))
                                     .unwrap_or_default();
                                 eprintln!(
                                     "yoyo: train {} departing S{} → S{}{}: {}",
                                     i, sensor, dest, station, route.description
                                 );
-                                if let Err(e) =
-                                    TrainController::execute_route(&pi, &route).await
-                                {
+                                if let Err(e) = TrainController::execute_route(&pi, &route).await {
                                     eprintln!("yoyo: train {} execute error: {e}", i);
                                     // Revert to idle
                                     controller.trains[i].reserved_segments.clear();
@@ -453,14 +544,9 @@ pub async fn run_automatic(
                     // Poll sensors to see if train has arrived
                     match poll_sensor(&pi, destination).await {
                         Ok(true) => {
-                            eprintln!(
-                                "yoyo: train {} arrived at S{}",
-                                i, destination
-                            );
+                            eprintln!("yoyo: train {} arrived at S{}", i, destination);
                             // Stop the tracks used by this route
-                            if let Err(e) =
-                                TrainController::stop_train_tracks(&pi, &route).await
-                            {
+                            if let Err(e) = TrainController::stop_train_tracks(&pi, &route).await {
                                 eprintln!("yoyo: train {} stop tracks error: {e}", i);
                             }
                             controller.arrive(i, destination);
@@ -494,7 +580,10 @@ pub async fn run_automatic(
                             // Log every ~5 seconds
                             eprintln!(
                                 "yoyo: train {} dwelling at {} (S{}) — {}s remaining",
-                                i, station_name, sensor, remaining.as_secs()
+                                i,
+                                station_name,
+                                sensor,
+                                remaining.as_secs()
                             );
                         }
                     }
@@ -502,10 +591,19 @@ pub async fn run_automatic(
             }
         }
 
+        // Update the observable status snapshot
+        tick_count += 1;
+        {
+            let snapshot = controller.snapshot(tick_count);
+            *status_slot.lock().await = Some(snapshot);
+        }
+
         // Sleep before next poll cycle
         tokio::time::sleep(Duration::from_millis(POLL_INTERVAL_MS)).await;
     }
 
+    // Clear status on exit
+    *status_slot.lock().await = None;
     eprintln!("yoyo: automatic mode stopped");
     Ok(())
 }
@@ -643,7 +741,7 @@ mod tests {
     fn dwell_check_not_expired() {
         let mut ctrl = TrainController::new(&test_positions()).unwrap();
         ctrl.arrive(0, 2); // waterloo
-        // Should not be complete immediately
+                           // Should not be complete immediately
         assert!(!ctrl.check_dwell_complete(0));
     }
 
@@ -717,5 +815,49 @@ mod tests {
         let ctrl = TrainController::new(&test_positions()).unwrap();
         // Should have entries for all 12 tracks
         assert!(ctrl.track_usage.len() >= 12);
+    }
+
+    #[test]
+    fn snapshot_idle_trains() {
+        let ctrl = TrainController::new(&test_positions()).unwrap();
+        let snap = ctrl.snapshot(0);
+        assert!(snap.running);
+        assert_eq!(snap.trains.len(), 2);
+        assert_eq!(snap.trains[0].phase, "idle");
+        assert_eq!(snap.trains[0].current_sensor, 1);
+        assert_eq!(snap.trains[1].current_sensor, 10);
+        assert_eq!(snap.tick_count, 0);
+    }
+
+    #[test]
+    fn snapshot_dwelling_train() {
+        let mut ctrl = TrainController::new(&test_positions()).unwrap();
+        ctrl.arrive(0, 2); // waterloo
+        let snap = ctrl.snapshot(42);
+        assert_eq!(snap.trains[0].phase, "dwelling");
+        assert_eq!(snap.trains[0].station.as_deref(), Some("waterloo"));
+        assert!(snap.trains[0].dwell_remaining_secs.is_some());
+        assert_eq!(snap.tick_count, 42);
+    }
+
+    #[test]
+    fn snapshot_en_route_train() {
+        let mut ctrl = TrainController::new(&test_positions()).unwrap();
+        let dest = ctrl.pick_destination(0).unwrap();
+        let _route = ctrl.plan_route(0, dest).unwrap();
+        let snap = ctrl.snapshot(1);
+        assert_eq!(snap.trains[0].phase, "en_route");
+        assert_eq!(snap.trains[0].destination, Some(dest));
+        assert!(!snap.trains[0].reserved_segments.is_empty());
+    }
+
+    #[test]
+    fn snapshot_serializes_to_json() {
+        let ctrl = TrainController::new(&test_positions()).unwrap();
+        let snap = ctrl.snapshot(5);
+        let json = serde_json::to_value(&snap).unwrap();
+        assert_eq!(json["running"], true);
+        assert!(json["trains"].is_array());
+        assert_eq!(json["tick_count"], 5);
     }
 }

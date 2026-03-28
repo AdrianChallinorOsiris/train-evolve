@@ -159,12 +159,12 @@ fn route_to_plan(train_index: usize, route: &Route, graph: &TrackGraph) -> Plann
     //    For each track segment, use the direction from the first hop on that track.
     let mut track_direction: BTreeMap<u8, TrackDirection> = BTreeMap::new();
     for hop in &route.hops {
-        track_direction.entry(hop.track_id).or_insert_with(|| {
-            match hop.traverse_direction {
+        track_direction
+            .entry(hop.track_id)
+            .or_insert_with(|| match hop.traverse_direction {
                 TraverseDirection::Fwd => TrackDirection::Fwd,
                 TraverseDirection::Bck => TrackDirection::Bck,
-            }
-        });
+            });
     }
 
     for &tid in &track_ids {
@@ -450,7 +450,9 @@ mod tests {
             .collect();
         // Track 1 should be FWD (sensor 1 comes before sensor 2 in along_fwd)
         assert!(
-            track_cmds.iter().any(|(tid, dir)| *tid == 1 && *dir == TrackDirection::Fwd),
+            track_cmds
+                .iter()
+                .any(|(tid, dir)| *tid == 1 && *dir == TrackDirection::Fwd),
             "route 1→2 should use FWD on track 1, got: {:?}",
             track_cmds
         );
@@ -479,7 +481,9 @@ mod tests {
             .collect();
         // Track 1 should be BCK (sensor 2 comes after sensor 1 in along_fwd)
         assert!(
-            track_cmds.iter().any(|(tid, dir)| *tid == 1 && *dir == TrackDirection::Bck),
+            track_cmds
+                .iter()
+                .any(|(tid, dir)| *tid == 1 && *dir == TrackDirection::Bck),
             "route 2→1 should use BCK on track 1, got: {:?}",
             track_cmds
         );

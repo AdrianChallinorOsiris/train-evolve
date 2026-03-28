@@ -1,3 +1,41 @@
+## Session 7 — Evolution transcript
+
+
+
+I'll start by reading all the required files systematically.All Boss Level items are checked off. Let me read the source code and journal.Now let me read the source code:Now let me read the remaining key source files:Now let me read the remaining source files and check the current state:Good — 95 tests pass (83 + 12), clippy clean, no uncommitted changes, session counter at 7 according to git. Let me check for issues:Now let me check the remaining layout files and do a thorough self-assessment:Now I have the full picture. Let me do my self-assessment.
+
+## Self-Assessment
+
+**State:** 95 tests pass (83 lib + 12 binary), clippy clean, no uncommitted changes, version 1.0.5.
+
+**No community issues** — no ISSUES_TODAY.md file.
+
+**Roadmap review:**
+- Level 1: ✅ Complete
+- Level 2: Several unchecked items remain (auto-commit, diff preview, /undo, conversation persistence, /save /load, multi-line input, refactor)
+- Level 3: ✅ Complete
+- Level 4: ✅ Complete
+- Boss Level: ✅ Complete (all 4 items checked off in session 6)
+
+**Code observations / issues:**
+
+1. **`GET /automatic/status` endpoint is missing** — the operator can start and stop automatic mode but can't query the current state of trains (which train is where, what phase it's in, what destinations are chosen). The `TrainController` has all this state but it's locked inside a spawned task. This is a significant observability gap for operating the railway.
+
+2. **The `automatic_start_json` response message is stale** — it says "timetable loop is a placeholder until Pi/routing integration" but that was already replaced with the real controller in session 6. A misleading message.
+
+3. **No `/automatic/status` or `/status` for train positions** — the service has `/health` but that only shows `{"status": "ok", "automatic": true/false}`. There's no way to query where trains are currently.
+
+4. **Level 2 item: "Refactor complex code automatically to make it readable and supportable"** — looking at the code, `graph.rs` at 964 lines and `main.rs` at 927 lines are the largest files. The main.rs REPL dispatch is getting verbose. This is actionable.
+
+**Decision for this session:** I'll focus on **observability and correctness**:
+1. Fix the stale message in `automatic_start_json`
+2. Add a `GET /automatic/status` endpoint that shows train controller state
+3. Clean up the code — the `main.rs` REPL Pi dispatch is verbose and could use some love
+
+Let me start implementing.Good. Now let me build the observability feature — a `GET /automatic/status` endpoint. The challenge is that `TrainController` state lives inside a spawned task. I need to expose it via shared state.
+
+The approach: add a shared `Arc<Mutex<Option<AutomaticStatus>>>` to `AutomationController` that the running loop updates on each tick, and a `status()` method that reads it.Now let me design the status snapshot. I need a serializable summary of the controller state that can be shared:Now I'll add the `AutomaticStatus` type and a method to snapshot the controller state. Let me add it after the `ControllerError` enum:Now update the `run_automatic` function to accept a shared status slot and update it on each tick:I need to add a `status_slot` parameter and update it each tick. Let me also add a `Mutex`-based type alias:Now find the sleep at the end of the loop and add the status update before it:Now update the `automation.rs` to pass the status slot through:Now update the `AutomationInner` and `AutomationController` to include the status slot:Update `new()`:Update the `start` method to pass the status slot:Now add the `status` method to `AutomationController`:Now add the `GET /automatic/status` endpoint to the service. Let me add the route and handler:Now add the `automatic_status_json` method to `AppState` and the handler. Let me find where to add it — after `automatic_stop_json`:Now add the HTTP handler function. Let me find the stop_handler and add it nearby:Now let me add the REPL command for `/automatic/status`. Let me update the REPL dispatch:Now update the help text and banner to document the new endpoint:Now update the HTTP endpoints list in the help text:Also update the REPL help section to list the new command:Update the service startup banner:Also update the module doc comment in service.rs:Now build and test:Clippy warning about redundant field name. Let me check:Clean. Now let me add a test for the snapshot functionality:
+
 ## Session 6 — Evolution transcript
 
 
