@@ -252,6 +252,7 @@ async fn run_serve(args: &[String]) {
         shutdown_tx: Arc::new(shutdown_tx),
     };
     eprintln!("yoyo v{}: HTTP service on http://{bind}", VERSION);
+    eprintln!("yoyo: Pi hardware at {pi_url}");
     eprintln!("yoyo: POST /evolve /initialise /route /program /automatic /stop");
     eprintln!(
         "yoyo: GET  /health /journal /roadmap /automatic/status /pi/status /pi/health /pi/sensors"
