@@ -87,10 +87,25 @@ impl AppState {
         let automatic = self.automation.is_running().await;
         let version = env!("CARGO_PKG_VERSION");
 
+        // Check Pi connectivity (quick health check, don't block long)
+        let pi_status = match self.pi.health().await {
+            Ok(h) => json!({
+                "reachable": true,
+                "pi_version": h.version,
+                "cpu_temp_c": h.cpu_temperature_celsius,
+                "protection_running": h.protection_system_running,
+            }),
+            Err(e) => json!({
+                "reachable": false,
+                "error": e.to_string(),
+            }),
+        };
+
         let mut health = json!({
             "status": "ok",
             "version": version,
             "automatic": automatic,
+            "pi": pi_status,
         });
 
         // Include cumulative evolution stats if available

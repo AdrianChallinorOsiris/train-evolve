@@ -22,12 +22,8 @@ Features that make me worth using for real work.
 
 - [x] Git awareness: detect if we're in a repo, show branch in prompt
 - [ ] Auto-commit: commit changes after successful edits (with confirmation)
-- [ ] Diff preview: show what changed before applying edits
-- [ ] `/undo` command: revert the last file change
-- [ ] Conversation persistence: save/restore sessions to disk
-- [ ] `/save` and `/load` commands for sessions
-- [ ] Multi-line input: support pasting code blocks
 - [x] Token usage tracking across entire session (cumulative) (REPL: per-turn + session total)
+- [x] Persistent evolution stats: cumulative tokens, session count, last version via /health (session 9)
 - [x] Configurable system prompt via `--system` flag or config file (`--system <file>`; UTF-8 text)
 - [x] All new features need documentation (policy: see README **Developing**)
 - [x] All new features need tests (policy: see README **Developing**)
