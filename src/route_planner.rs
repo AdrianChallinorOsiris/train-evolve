@@ -57,7 +57,7 @@ impl std::fmt::Display for TrackCommand {
 
 /// A planned route for one train: source, destination, the hops, and the
 /// concrete commands to execute.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedRoute {
     /// Train index (0-based) in the original request.
     pub train_index: usize,

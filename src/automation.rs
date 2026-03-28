@@ -1,15 +1,18 @@
-//! Boss-level automatic operation (ROADMAP “Prove It”): timetable loop until stopped.
+//! Boss-level automatic operation (ROADMAP "Prove It"): timetable loop until stopped.
 //!
-//! Hardware integration (Pi API, routing, collision avoidance) is still TODO; the loop is a
-//! cancellable placeholder that ticks until `/stop`.
+//! When `/automatic` is posted, the controller loads train positions from the INITIALISE file,
+//! builds a [`TrainController`](crate::train_controller::TrainController), and runs a continuous
+//! routing loop: pick destinations, plan routes (avoiding collisions), execute on the Pi,
+//! poll sensors, dwell at stations. `/stop` cancels the loop and restores train positions.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
 
 use tokio::sync::Mutex;
 
+use crate::pi_client::PiClient;
 use crate::state::{self, InitialiseRequest, StateError};
+use crate::train_controller;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -53,7 +56,7 @@ impl AutomationController {
     }
 
     /// Start boss-level automation: requires INITIALISE data; saves a snapshot for `/stop`.
-    pub async fn start(&self) -> Result<(), AutomationError> {
+    pub async fn start(&self, pi: Arc<PiClient>) -> Result<(), AutomationError> {
         let mut inner = self.inner.lock().await;
         if let Some(ref h) = inner.join {
             if !h.is_finished() {
@@ -69,9 +72,12 @@ impl AutomationController {
 
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
+        let trains = init.trains.clone();
 
         let join = tokio::spawn(async move {
-            automatic_loop(flag).await;
+            if let Err(e) = train_controller::run_automatic(pi, trains, flag).await {
+                eprintln!("yoyo: automatic mode error: {e}");
+            }
         });
 
         inner.join = Some(join);
@@ -103,29 +109,6 @@ impl AutomationController {
             .as_ref()
             .map(|h| !h.is_finished())
             .unwrap_or(false)
-    }
-}
-
-/// Placeholder: real implementation will read `data/track_layout.toml`, call the Pi API, run
-/// collision-free routing, station dwell times, etc. (ROADMAP Boss Level).
-async fn automatic_loop(cancel: Arc<AtomicBool>) {
-    let mut tick: u64 = 0;
-    loop {
-        if cancel.load(Ordering::SeqCst) {
-            break;
-        }
-        tick = tick.wrapping_add(1);
-        // Short sleep so `/stop` remains responsive.
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if cancel.load(Ordering::SeqCst) {
-            break;
-        }
-        // Placeholder: one “timetable” step per second (log every 10 s to avoid noise).
-        if tick != 0 && tick.is_multiple_of(20) {
-            eprintln!(
-                "yoyo: automatic mode tick {tick} (placeholder — integrate Pi + routing here)"
-            );
-        }
     }
 }
 

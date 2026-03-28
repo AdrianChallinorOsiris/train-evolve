@@ -11,3 +11,4 @@ pub mod prompts;
 pub mod route_planner;
 pub mod service;
 pub mod state;
+pub mod train_controller;

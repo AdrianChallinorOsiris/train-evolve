@@ -123,7 +123,7 @@ impl AppState {
 
     /// Same as `POST /automatic`.
     pub async fn automatic_start_json(&self) -> Result<serde_json::Value, AutomationError> {
-        self.automation.start().await?;
+        self.automation.start(self.pi.clone()).await?;
         Ok(json!({
             "status": "running",
             "message": "boss-level automatic mode started (timetable loop is a placeholder until Pi/routing integration)",
