@@ -364,6 +364,7 @@ async fn run_repl(args: &[String]) {
     if let Some(ref b) = &git_branch {
         println!("{DIM}  git:   {b}{RESET}");
     }
+    println!("{DIM}  pi:    {pi_url}{RESET}");
     println!("{DIM}  type /help for commands{RESET}\n");
 
     let stdin = io::stdin();
