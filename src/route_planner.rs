@@ -270,6 +270,7 @@ mod tests {
     fn plan_same_sensor_no_commands() {
         let graph = test_graph();
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 5,
             destination: Some(5),
         }];
@@ -284,6 +285,7 @@ mod tests {
     fn plan_adjacent_sensors() {
         let graph = test_graph();
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 1,
             destination: Some(2),
         }];
@@ -303,6 +305,7 @@ mod tests {
     fn plan_route_to_siding_requires_points() {
         let graph = test_graph();
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 10,
             destination: Some(18),
         }];
@@ -324,6 +327,7 @@ mod tests {
     fn plan_cross_track_route() {
         let graph = test_graph();
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 3,
             destination: Some(4),
         }];
@@ -339,10 +343,12 @@ mod tests {
         let graph = test_graph();
         let trains = vec![
             TrainPosition {
+                train: 1,
                 sensor: 1,
                 destination: Some(5),
             },
             TrainPosition {
+                train: 2,
                 sensor: 10,
                 destination: Some(12),
             },
@@ -357,6 +363,7 @@ mod tests {
     fn plan_no_destination_errors() {
         let graph = test_graph();
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 1,
             destination: None,
         }];
@@ -368,6 +375,7 @@ mod tests {
     fn plan_unreachable_sensor_errors() {
         let graph = test_graph();
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 1,
             destination: Some(99),
         }];
@@ -432,6 +440,7 @@ mod tests {
         let graph = test_graph();
         // Sensor 1 → 2 is forward along track 1's along_fwd
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 1,
             destination: Some(2),
         }];
@@ -463,6 +472,7 @@ mod tests {
         let graph = test_graph();
         // Sensor 2 → 1 is backward along track 1's along_fwd
         let trains = vec![TrainPosition {
+            train: 1,
             sensor: 2,
             destination: Some(1),
         }];

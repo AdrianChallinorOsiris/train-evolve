@@ -325,6 +325,7 @@ impl TrainController {
     ) -> Result<PlannedRoute, ControllerError> {
         let train = &self.trains[train_index];
         let trains_for_planner = vec![TrainPosition {
+            train: (train_index + 1) as u8,
             sensor: train.current_sensor,
             destination: Some(destination),
         }];
@@ -634,10 +635,12 @@ mod tests {
     fn test_positions() -> Vec<TrainPosition> {
         vec![
             TrainPosition {
+                train: 1,
                 sensor: 1,
                 destination: None,
             },
             TrainPosition {
+                train: 2,
                 sensor: 10,
                 destination: None,
             },

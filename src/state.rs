@@ -30,6 +30,8 @@ pub struct InitialiseRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainPosition {
+    /// Logical train identifier (e.g. 1, 2, …).
+    pub train: u8,
     /// Which sensor currently detects this train (1–24).
     pub sensor: u8,
     /// Target sensor for this train (optional; used by route planner).
@@ -43,6 +45,10 @@ pub enum StateError {
     TooManyTrains(usize),
     #[error("invalid sensor id {0}: must be 1..=24")]
     InvalidSensor(u8),
+    #[error("invalid train id {0}: must be >= 1")]
+    InvalidTrainId(u8),
+    #[error("duplicate train id {0}")]
+    DuplicateTrainId(u8),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -54,7 +60,14 @@ impl InitialiseRequest {
         if self.trains.len() > MAX_TRAINS {
             return Err(StateError::TooManyTrains(self.trains.len()));
         }
+        let mut seen_ids = std::collections::HashSet::new();
         for t in &self.trains {
+            if t.train == 0 {
+                return Err(StateError::InvalidTrainId(t.train));
+            }
+            if !seen_ids.insert(t.train) {
+                return Err(StateError::DuplicateTrainId(t.train));
+            }
             if !(1..=24).contains(&t.sensor) {
                 return Err(StateError::InvalidSensor(t.sensor));
             }
@@ -156,8 +169,9 @@ pub fn save_program_placeholder(value: &serde_json::Value) -> Result<(), StateEr
 mod tests {
     use super::*;
 
-    fn tp(sensor: u8) -> TrainPosition {
+    fn tp(train: u8, sensor: u8) -> TrainPosition {
         TrainPosition {
+            train,
             sensor,
             destination: None,
         }
@@ -166,8 +180,8 @@ mod tests {
     #[test]
     fn validate_max_trains() {
         let mut trains = vec![];
-        for _ in 0..7 {
-            trains.push(tp(1));
+        for i in 0..7 {
+            trains.push(tp(i + 1, 1));
         }
         let req = InitialiseRequest { trains };
         assert!(req.validate().is_err());
@@ -176,7 +190,7 @@ mod tests {
     #[test]
     fn validate_ok_trains() {
         let req = InitialiseRequest {
-            trains: vec![tp(1), tp(12), tp(24)],
+            trains: vec![tp(1, 1), tp(2, 12), tp(3, 24)],
         };
         assert!(req.validate().is_ok());
     }
@@ -184,7 +198,7 @@ mod tests {
     #[test]
     fn validate_invalid_sensor_zero() {
         let req = InitialiseRequest {
-            trains: vec![tp(0)],
+            trains: vec![tp(1, 0)],
         };
         assert!(matches!(req.validate(), Err(StateError::InvalidSensor(0))));
     }
@@ -192,7 +206,7 @@ mod tests {
     #[test]
     fn validate_invalid_sensor_high() {
         let req = InitialiseRequest {
-            trains: vec![tp(25)],
+            trains: vec![tp(1, 25)],
         };
         assert!(matches!(req.validate(), Err(StateError::InvalidSensor(25))));
     }
@@ -201,6 +215,7 @@ mod tests {
     fn validate_invalid_destination() {
         let req = InitialiseRequest {
             trains: vec![TrainPosition {
+                train: 1,
                 sensor: 1,
                 destination: Some(99),
             }],
@@ -209,16 +224,37 @@ mod tests {
     }
 
     #[test]
+    fn validate_invalid_train_id_zero() {
+        let req = InitialiseRequest {
+            trains: vec![tp(0, 1)],
+        };
+        assert!(matches!(req.validate(), Err(StateError::InvalidTrainId(0))));
+    }
+
+    #[test]
+    fn validate_duplicate_train_id() {
+        let req = InitialiseRequest {
+            trains: vec![tp(1, 1), tp(1, 2)],
+        };
+        assert!(matches!(
+            req.validate(),
+            Err(StateError::DuplicateTrainId(1))
+        ));
+    }
+
+    #[test]
     fn save_load_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("trains.json");
         let req = InitialiseRequest {
-            trains: vec![tp(3), tp(18)],
+            trains: vec![tp(1, 3), tp(2, 18)],
         };
         req.save(&path).unwrap();
         let loaded = InitialiseRequest::load(&path).unwrap().unwrap();
         assert_eq!(loaded.trains.len(), 2);
+        assert_eq!(loaded.trains[0].train, 1);
         assert_eq!(loaded.trains[0].sensor, 3);
+        assert_eq!(loaded.trains[1].train, 2);
         assert_eq!(loaded.trains[1].sensor, 18);
     }
 
