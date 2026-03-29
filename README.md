@@ -31,7 +31,7 @@ Each **evolution** (each `/evolve` trigger):
 5. If tests pass → commit. If tests fail → revert `src/` and report failure.
 6. If it addressed a GitHub issue (when using the shell script path), it can comment back via `gh`.
 
-The history lives in the git log. The journal is in [JOURNAL.md](JOURNAL.md). The plan is in [ROADMAP.md](ROADMAP.md). The static track layout (tracks, sensors, points, stations) lives in [data/track_layout.toml](data/track_layout.toml); see [docs/TRACK_LAYOUT.md](docs/TRACK_LAYOUT.md).
+The history lives in the git log. The journal is in [JOURNAL.md](JOURNAL.md). The plan is in [ROADMAP.md](ROADMAP.md). The static track layout (tracks, sensors, points, stations) lives in [data/track_layout.toml](data/track_layout.toml); see [docs/TRACK_LAYOUT.md](docs/TRACK_LAYOUT.md). The full HTTP API and JSON formats are documented in [docs/API.md](docs/API.md).
 
 ## Talk to It
 
@@ -79,8 +79,10 @@ After each assistant reply, the REPL prints **tokens for this turn** and a **ses
 | `GET` | `/journal` | — | JSON: `{ "path": "JOURNAL.md", "text": "..." }` — evolution journal on disk |
 | `GET` | `/roadmap` | — | JSON: `{ "path": "ROADMAP.md", "text": "..." }` — planned curriculum |
 | `POST` | `/evolve` | (optional) | One evolution iteration (build → agent → verify → git wrap-up). Response includes `session` (from `DAY_COUNT`, a run counter). |
-| `POST` | `/initialise` | JSON: `{ "trains": [ { "sensor": 4 }, ... ] }` | Up to **6** trains; stores `data/runtime/trains.json` |
+| `POST` | `/initialise` | JSON: `{ "trains": [ { "train": 1, "sensor": 4 }, ... ] }` | Register trains on the layout; up to **6** trains. See [docs/API.md](docs/API.md) |
 | `POST` | `/program` | JSON (any) | Placeholder; saves payload to `data/runtime/program.json` for a future track program |
+| `POST` | `/route` | JSON: `{ "trains": [ { "train": 1, "sensor": 1, "destination": 5 } ] }` | Compute routes for trains with destinations. See [docs/API.md](docs/API.md) |
+| `POST` | `/route/execute` | (same as `/route`) | Compute and execute routes on Pi hardware |
 | `POST` | `/automatic` | — | **Boss-level** automation: loads `data/runtime/trains.json` (call `/initialise` first), saves a snapshot, runs a loop until `/stop` (timetable + Pi hardware integration is still a placeholder) |
 | `POST` | `/stop` | — | Stops `/automatic` and restores **saved** train positions (`data/runtime/trains.json` from the snapshot at `/automatic` start). Moving real trains on the Pi is not implemented yet — that will use the track API later. |
 
@@ -93,7 +95,7 @@ curl -s http://127.0.0.1:8080/roadmap
 curl -s -X POST http://127.0.0.1:8080/evolve
 curl -s -X POST http://127.0.0.1:8080/initialise \
   -H 'Content-Type: application/json' \
-  -d '{"trains":[{"sensor":4},{"sensor":7}]}'
+  -d '{"trains":[{"train":1,"sensor":4},{"train":2,"sensor":7}]}'
 curl -s -X POST http://127.0.0.1:8080/automatic
 curl -s -X POST http://127.0.0.1:8080/stop
 ```
