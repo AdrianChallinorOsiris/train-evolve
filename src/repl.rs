@@ -40,8 +40,9 @@ pub fn print_repl_help() {
     println!("\n{BOLD}  Service (same as HTTP --serve):{RESET}");
     println!("  {GREEN}/health{RESET}  {GREEN}/journal{RESET}  {GREEN}/roadmap{RESET}  {GREEN}/evolve{RESET}  {GREEN}/automatic{RESET}  {GREEN}/automatic/status{RESET}  {GREEN}/stop{RESET}");
     println!(
-        "  {GREEN}/initialise <json>{RESET}   e.g. {{\"trains\":[{{\"train\":1,\"sensor\":3}}]}}"
+        "  {GREEN}/initialise <json>{RESET}   register trains — e.g. {{\"trains\":[{{\"train\":1,\"sensor\":21}},{{\"train\":2,\"sensor\":22}}]}}"
     );
+    println!("  {DIM}                        train: id (≥1, unique)  sensor: current position (1-24)  max 6 trains{RESET}");
     println!("  {GREEN}/program <json>{RESET}      track program placeholder JSON");
     println!(
         "  {GREEN}/route <json>{RESET}        route planner — e.g. {{\"trains\":[{{\"train\":1,\"sensor\":1,\"destination\":5}}]}}"
