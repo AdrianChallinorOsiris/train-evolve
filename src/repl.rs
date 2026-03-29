@@ -7,7 +7,7 @@ use yoyo::service::{
     initialise_json, journal_response, program_json, roadmap_response, route_json, AppState,
     JOURNAL_FILE, ROADMAP_FILE,
 };
-use yoyo::state::InitialiseRequest;
+use yoyo::state::{InitialiseRequest, RouteRequest};
 
 // ANSI colors (shared with main.rs)
 const RESET: &str = "\x1b[0m";
@@ -40,12 +40,12 @@ pub fn print_repl_help() {
     println!("\n{BOLD}  Service (same as HTTP --serve):{RESET}");
     println!("  {GREEN}/health{RESET}  {GREEN}/journal{RESET}  {GREEN}/roadmap{RESET}  {GREEN}/evolve{RESET}  {GREEN}/automatic{RESET}  {GREEN}/automatic/status{RESET}  {GREEN}/stop{RESET}");
     println!(
-        "  {GREEN}/initialise <json>{RESET}   register trains — e.g. {{\"trains\":[{{\"train\":1,\"sensor\":21}},{{\"train\":2,\"sensor\":22}}]}}"
+        "  {GREEN}/initialise <json>{RESET}   register trains — e.g. {{\"trains\":[{{\"train\":1,\"sensor\":21}},{{\"train\":2,\"sensor\":22,\"direction\":\"bwd\"}}]}}"
     );
-    println!("  {DIM}                        train: id (≥1, unique)  sensor: current position (1-24)  max 6 trains{RESET}");
+    println!("  {DIM}                        train: id (≥1, unique)  sensor: position (1-24)  direction: fwd|bwd (default fwd)  max 6 trains{RESET}");
     println!("  {GREEN}/program <json>{RESET}      track program placeholder JSON");
     println!(
-        "  {GREEN}/route <json>{RESET}        route planner — e.g. {{\"trains\":[{{\"train\":1,\"sensor\":1,\"destination\":5}}]}}"
+        "  {GREEN}/route <json>{RESET}        route to station — e.g. {{\"trains\":[{{\"train\":1,\"sensor\":1,\"station\":\"waterloo\",\"arrival\":\"FWD\"}}]}}"
     );
     println!("\n{BOLD}  Pi hardware:{RESET}");
     println!("  {GREEN}/pi status{RESET}  {GREEN}/pi health{RESET}  {GREEN}/pi sensors{RESET}  {GREEN}/pi sensors reset{RESET}");
@@ -288,7 +288,7 @@ pub async fn service_dispatch(line: &str, state: &AppState) -> bool {
         }
         s if s.starts_with("/route") => {
             dispatch_json_command(s, "/route", |rest| {
-                match serde_json::from_str::<InitialiseRequest>(rest) {
+                match serde_json::from_str::<RouteRequest>(rest) {
                     Ok(body) => match route_json(body) {
                         Ok(v) => print_json_pretty(&v),
                         Err(e) => eprintln!("{RED}  route: {e}{RESET}"),

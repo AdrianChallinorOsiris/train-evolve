@@ -90,6 +90,18 @@ pub enum PlanError {
         from: u8,
         to: u8,
     },
+    #[error("unknown station \"{name}\" for train {train_id}")]
+    UnknownStation { train_id: u8, name: String },
+    #[error(
+        "no sensor at station \"{station}\" reachable with arrival {arrival} for train {train_id}"
+    )]
+    NoSensorAtStation {
+        train_id: u8,
+        station: String,
+        arrival: String,
+    },
+    #[error("station \"{station}\" fully occupied; no safe waiting position for train {train_id}")]
+    StationFull { train_id: u8, station: String },
     #[error("layout load/validate error: {0}")]
     Layout(String),
 }
@@ -254,10 +266,322 @@ fn load_and_validate_layout() -> Result<TrackLayout, PlanError> {
     Ok(layout)
 }
 
+// ---------------------------------------------------------------------------
+// Station-based route planning
+// ---------------------------------------------------------------------------
+
+use crate::layout::graph::TraverseDirection;
+use crate::state::{ArrivalDirection, RouteRequest};
+use std::collections::{BTreeSet, HashMap};
+
+/// Result of planning a station route for one train.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StationRouteResult {
+    /// Train identifier from the request.
+    pub train: u8,
+    /// Starting sensor.
+    pub from_sensor: u8,
+    /// Station name.
+    pub station: String,
+    /// Requested arrival direction.
+    pub arrival: String,
+    /// The chosen destination sensor at the station (if routed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_sensor: Option<u8>,
+    /// Whether the train is waiting (station full) vs routed.
+    pub waiting: bool,
+    /// If waiting, which sensor the train should wait at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wait_sensor: Option<u8>,
+    /// Human-readable description.
+    pub description: String,
+    /// Planned route (if routed, not waiting).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route: Option<PlannedRoute>,
+}
+
+/// Plan station routes for all trains in a `RouteRequest`.
+///
+/// For each train:
+/// 1. Look up the target station's sensors
+/// 2. Pick a sensor that matches the arrival direction and isn't occupied
+/// 3. If all sensors are occupied, find a safe waiting position
+/// 4. Plan the route (or waiting move) avoiding conflicts with other trains
+pub fn plan_station_routes(req: &RouteRequest) -> Result<Vec<StationRouteResult>, PlanError> {
+    let layout = load_and_validate_layout()?;
+    let graph = TrackGraph::from_layout(&layout);
+    plan_station_routes_with(req, &layout, &graph)
+}
+
+/// Plan station routes using a pre-built layout and graph (testable without I/O).
+pub fn plan_station_routes_with(
+    req: &RouteRequest,
+    layout: &TrackLayout,
+    graph: &TrackGraph,
+) -> Result<Vec<StationRouteResult>, PlanError> {
+    // Build station name → sensor list lookup.
+    let station_map: HashMap<String, Vec<u8>> = layout
+        .stations
+        .iter()
+        .map(|s| (s.name.to_lowercase(), s.sensor_ids.clone()))
+        .collect();
+
+    // Track which sensors are occupied (by trains in this request).
+    let mut occupied_sensors: BTreeSet<u8> = req.trains.iter().map(|t| t.sensor).collect();
+    // Track which track segments are reserved by already-planned routes.
+    let mut reserved_segments: BTreeSet<u8> = BTreeSet::new();
+
+    let mut results = Vec::new();
+
+    for train_req in &req.trains {
+        let station_key = train_req.station.to_lowercase();
+        let station_sensors =
+            station_map
+                .get(&station_key)
+                .ok_or_else(|| PlanError::UnknownStation {
+                    train_id: train_req.train,
+                    name: train_req.station.clone(),
+                })?;
+
+        // Try to find an available sensor at the station matching the arrival direction.
+        let result = pick_station_sensor_and_route(
+            train_req,
+            station_sensors,
+            &occupied_sensors,
+            &reserved_segments,
+            graph,
+            layout,
+        );
+
+        match result {
+            StationPick::Routed { sensor, plan } => {
+                // Reserve the track segments.
+                for &tid in &plan.track_ids {
+                    reserved_segments.insert(tid);
+                }
+                // Mark the destination sensor as occupied.
+                occupied_sensors.insert(sensor);
+
+                results.push(StationRouteResult {
+                    train: train_req.train,
+                    from_sensor: train_req.sensor,
+                    station: train_req.station.clone(),
+                    arrival: train_req.arrival.to_string(),
+                    to_sensor: Some(sensor),
+                    waiting: false,
+                    wait_sensor: None,
+                    description: plan.description.clone(),
+                    route: Some(plan),
+                });
+                // If the train moved away from its starting sensor, free that sensor.
+                if train_req.sensor != sensor {
+                    occupied_sensors.remove(&train_req.sensor);
+                }
+            }
+            StationPick::AlreadyAtStation { sensor } => {
+                results.push(StationRouteResult {
+                    train: train_req.train,
+                    from_sensor: train_req.sensor,
+                    station: train_req.station.clone(),
+                    arrival: train_req.arrival.to_string(),
+                    to_sensor: Some(sensor),
+                    waiting: false,
+                    wait_sensor: None,
+                    description: format!(
+                        "Train {} already at station {} (sensor {})",
+                        train_req.train, train_req.station, sensor
+                    ),
+                    route: None,
+                });
+            }
+            StationPick::Wait { wait_at, reason } => {
+                results.push(StationRouteResult {
+                    train: train_req.train,
+                    from_sensor: train_req.sensor,
+                    station: train_req.station.clone(),
+                    arrival: train_req.arrival.to_string(),
+                    to_sensor: None,
+                    waiting: true,
+                    wait_sensor: Some(wait_at),
+                    description: reason,
+                    route: None,
+                });
+            }
+            StationPick::NoRoute => {
+                return Err(PlanError::StationFull {
+                    train_id: train_req.train,
+                    station: train_req.station.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Internal result of trying to route a train to a station.
+enum StationPick {
+    /// Successfully routed to a specific sensor at the station.
+    Routed { sensor: u8, plan: PlannedRoute },
+    /// Train is already at the station.
+    AlreadyAtStation { sensor: u8 },
+    /// Station is full; train should wait at this sensor.
+    Wait { wait_at: u8, reason: String },
+    /// No route or waiting position could be found.
+    NoRoute,
+}
+
+/// Try to pick a sensor at the station and plan a route.
+///
+/// Strategy:
+/// 1. If the train is already on a station sensor, done.
+/// 2. Find station sensors reachable with the correct arrival direction and not occupied.
+/// 3. If none free, find a safe waiting position.
+fn pick_station_sensor_and_route(
+    train_req: &crate::state::RouteTrainRequest,
+    station_sensors: &[u8],
+    occupied: &BTreeSet<u8>,
+    reserved: &BTreeSet<u8>,
+    graph: &TrackGraph,
+    layout: &TrackLayout,
+) -> StationPick {
+    // 1. Already at the station?
+    if station_sensors.contains(&train_req.sensor) {
+        return StationPick::AlreadyAtStation {
+            sensor: train_req.sensor,
+        };
+    }
+
+    // 2. Find available station sensors matching the arrival direction.
+    let mut candidates: Vec<(u8, Route, PlannedRoute)> = Vec::new();
+    for &ss in station_sensors {
+        if occupied.contains(&ss) {
+            continue;
+        }
+        if let Some(route) = graph.find_route(train_req.sensor, ss) {
+            // Check arrival direction: the last hop's traverse_direction
+            // tells us how the train arrives on the destination track.
+            if !route.hops.is_empty() {
+                let last_hop = route.hops.last().unwrap();
+                let arrives_fwd = last_hop.traverse_direction == TraverseDirection::Fwd;
+                let wanted_fwd = train_req.arrival == ArrivalDirection::Fwd;
+                if arrives_fwd != wanted_fwd {
+                    continue;
+                }
+            }
+            // Check that route segments don't conflict with reserved.
+            let route_segments: BTreeSet<u8> = route.hops.iter().map(|h| h.track_id).collect();
+            if !route_segments.is_disjoint(reserved) {
+                continue;
+            }
+            let plan = route_to_plan(0, &route, graph);
+            candidates.push((ss, route, plan));
+        }
+    }
+
+    // Prefer the shortest route.
+    candidates.sort_by_key(|(_, route, _)| route.hops.len());
+
+    if let Some((sensor, _route, plan)) = candidates.into_iter().next() {
+        return StationPick::Routed { sensor, plan };
+    }
+
+    // 3. Station is full or no matching arrival direction available.
+    //    Find a safe waiting position: a sensor on the route toward the station
+    //    that doesn't block any existing train's exit path.
+    find_safe_waiting_position(
+        train_req,
+        station_sensors,
+        occupied,
+        reserved,
+        graph,
+        layout,
+    )
+}
+
+/// Find a safe sensor to wait at when the station is full.
+///
+/// We look for a sensor on the path toward the station that:
+/// - Is not occupied
+/// - Doesn't block the exit of any train currently at the station
+///
+/// For constrained stations like "industrial" (track 12, sensor 23),
+/// the only exit is BWD from T12 → T2. We must not block track 2 or
+/// place the waiting train on a sensor that prevents the occupant from leaving.
+fn find_safe_waiting_position(
+    train_req: &crate::state::RouteTrainRequest,
+    station_sensors: &[u8],
+    occupied: &BTreeSet<u8>,
+    reserved: &BTreeSet<u8>,
+    graph: &TrackGraph,
+    _layout: &TrackLayout,
+) -> StationPick {
+    // Find exit tracks from each occupied station sensor.
+    // An exit track is any track segment used by edges leaving the station sensor.
+    let mut blocked_segments: BTreeSet<u8> = BTreeSet::new();
+    for &ss in station_sensors {
+        if !occupied.contains(&ss) {
+            continue;
+        }
+        // All edges from this sensor = possible exit routes.
+        if let Some(edges) = graph.edges.get(&ss) {
+            for edge in edges {
+                if edge.to != 0 {
+                    blocked_segments.insert(edge.track_id);
+                }
+            }
+        }
+    }
+
+    // Try to find a route to any station sensor (even occupied) and pick
+    // an intermediate sensor that's safe to wait at.
+    for &ss in station_sensors {
+        if let Some(route) = graph.find_route(train_req.sensor, ss) {
+            // Walk backward from the destination to find a safe waiting sensor.
+            for hop in route.hops.iter().rev() {
+                let wait_sensor = hop.from;
+                if occupied.contains(&wait_sensor) {
+                    continue;
+                }
+                // Don't wait on a segment that blocks an occupied train's exit.
+                if blocked_segments.contains(&hop.track_id) {
+                    continue;
+                }
+                // Don't conflict with already-reserved segments.
+                if reserved.contains(&hop.track_id) {
+                    continue;
+                }
+                return StationPick::Wait {
+                    wait_at: wait_sensor,
+                    reason: format!(
+                        "Train {} waiting at sensor {} — station {} is full; \
+                         will proceed when a platform clears",
+                        train_req.train, wait_sensor, train_req.station
+                    ),
+                };
+            }
+        }
+    }
+
+    // Last resort: stay where you are if that doesn't block anything.
+    if !blocked_segments.contains(graph.sensor_track.get(&train_req.sensor).unwrap_or(&0)) {
+        return StationPick::Wait {
+            wait_at: train_req.sensor,
+            reason: format!(
+                "Train {} holding at sensor {} — station {} is full",
+                train_req.train, train_req.sensor, train_req.station
+            ),
+        };
+    }
+
+    StationPick::NoRoute
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::TrackLayout;
+    use crate::state::TrainDirection;
 
     fn test_graph() -> TrackGraph {
         let path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
@@ -272,6 +596,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 5,
+            direction: TrainDirection::default(),
             destination: Some(5),
         }];
         let plans = plan_routes_with_graph(&trains, &graph).unwrap();
@@ -287,6 +612,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 1,
+            direction: TrainDirection::default(),
             destination: Some(2),
         }];
         let plans = plan_routes_with_graph(&trains, &graph).unwrap();
@@ -307,6 +633,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 10,
+            direction: TrainDirection::default(),
             destination: Some(18),
         }];
         let plans = plan_routes_with_graph(&trains, &graph).unwrap();
@@ -329,6 +656,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 3,
+            direction: TrainDirection::default(),
             destination: Some(4),
         }];
         let plans = plan_routes_with_graph(&trains, &graph).unwrap();
@@ -345,11 +673,13 @@ mod tests {
             TrainPosition {
                 train: 1,
                 sensor: 1,
+                direction: TrainDirection::default(),
                 destination: Some(5),
             },
             TrainPosition {
                 train: 2,
                 sensor: 10,
+                direction: TrainDirection::default(),
                 destination: Some(12),
             },
         ];
@@ -365,6 +695,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 1,
+            direction: TrainDirection::default(),
             destination: None,
         }];
         let err = plan_routes_with_graph(&trains, &graph).unwrap_err();
@@ -377,6 +708,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 1,
+            direction: TrainDirection::default(),
             destination: Some(99),
         }];
         let err = plan_routes_with_graph(&trains, &graph).unwrap_err();
@@ -442,6 +774,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 1,
+            direction: TrainDirection::default(),
             destination: Some(2),
         }];
         let plans = plan_routes_with_graph(&trains, &graph).unwrap();
@@ -474,6 +807,7 @@ mod tests {
         let trains = vec![TrainPosition {
             train: 1,
             sensor: 2,
+            direction: TrainDirection::default(),
             destination: Some(1),
         }];
         let plans = plan_routes_with_graph(&trains, &graph).unwrap();

@@ -20,7 +20,7 @@ use crate::automation::AutomationError;
 use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
 use crate::pi_client::{PiClient, PointDirection, TrackDirection};
 use crate::route_planner;
-use crate::state::{self, EvolutionStats, InitialiseRequest, StateError};
+use crate::state::{self, EvolutionStats, InitialiseRequest, RouteRequest, StateError};
 use crate::train_controller;
 
 /// Sender used by the evolve handler to tell the server loop to shut down for a restart.
@@ -300,44 +300,57 @@ pub fn program_json(payload: serde_json::Value) -> Result<serde_json::Value, Sta
     }))
 }
 
-/// Same as `POST /route`: compute routes for trains with destinations.
-pub fn route_json(body: InitialiseRequest) -> Result<serde_json::Value, route_planner::PlanError> {
+/// Same as `POST /route`: plan station routes for trains.
+pub fn route_json(body: RouteRequest) -> Result<serde_json::Value, route_planner::PlanError> {
     body.validate()
         .map_err(|e| route_planner::PlanError::Layout(e.to_string()))?;
-    let plans = route_planner::plan_routes(&body.trains)?;
+    let results = route_planner::plan_station_routes(&body)?;
     Ok(json!({
         "status": "ok",
-        "routes": plans,
+        "routes": results,
     }))
 }
 
 impl AppState {
-    /// Execute a set of planned routes by sending commands to the Pi hardware.
+    /// Execute planned station routes by sending commands to the Pi hardware.
     pub async fn execute_routes_json(
         &self,
-        body: InitialiseRequest,
+        body: RouteRequest,
     ) -> Result<serde_json::Value, String> {
         body.validate().map_err(|e| e.to_string())?;
-        let plans = route_planner::plan_routes(&body.trains).map_err(|e| e.to_string())?;
+        let station_results =
+            route_planner::plan_station_routes(&body).map_err(|e| e.to_string())?;
 
         let mut results = Vec::new();
-        for plan in &plans {
-            let mut cmd_results = Vec::new();
-            for cmd in &plan.commands {
-                let result = train_controller::execute_command(&self.pi, cmd).await;
-                cmd_results.push(json!({
-                    "command": cmd.to_string(),
-                    "success": result.is_ok(),
-                    "error": result.err().map(|e| e.to_string()),
+        for sr in &station_results {
+            if let Some(ref plan) = sr.route {
+                let mut cmd_results = Vec::new();
+                for cmd in &plan.commands {
+                    let result = train_controller::execute_command(&self.pi, cmd).await;
+                    cmd_results.push(json!({
+                        "command": cmd.to_string(),
+                        "success": result.is_ok(),
+                        "error": result.err().map(|e| e.to_string()),
+                    }));
+                }
+                results.push(json!({
+                    "train": sr.train,
+                    "from_sensor": sr.from_sensor,
+                    "to_sensor": sr.to_sensor,
+                    "station": sr.station,
+                    "description": sr.description,
+                    "commands_executed": cmd_results,
+                }));
+            } else {
+                results.push(json!({
+                    "train": sr.train,
+                    "from_sensor": sr.from_sensor,
+                    "station": sr.station,
+                    "waiting": sr.waiting,
+                    "wait_sensor": sr.wait_sensor,
+                    "description": sr.description,
                 }));
             }
-            results.push(json!({
-                "train_index": plan.train_index,
-                "from_sensor": plan.from_sensor,
-                "to_sensor": plan.to_sensor,
-                "description": plan.description,
-                "commands_executed": cmd_results,
-            }));
         }
 
         Ok(json!({
@@ -420,9 +433,11 @@ async fn initialise_handler(
     initialise_json(body)
         .map_err(|e: StateError| {
             let code = match &e {
-                StateError::TooManyTrains(_) | StateError::InvalidSensor(_) => {
-                    StatusCode::BAD_REQUEST
-                }
+                StateError::TooManyTrains(_)
+                | StateError::InvalidSensor(_)
+                | StateError::InvalidTrainId(_)
+                | StateError::DuplicateTrainId(_)
+                | StateError::InvalidStation(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (code, e.to_string())
@@ -439,13 +454,16 @@ async fn program_handler(
 }
 
 async fn route_handler(
-    Json(body): Json<InitialiseRequest>,
+    Json(body): Json<RouteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     route_json(body)
         .map_err(|e| {
             let code = match &e {
                 route_planner::PlanError::NoDestination { .. } => StatusCode::BAD_REQUEST,
                 route_planner::PlanError::NoRoute { .. } => StatusCode::NOT_FOUND,
+                route_planner::PlanError::UnknownStation { .. } => StatusCode::BAD_REQUEST,
+                route_planner::PlanError::NoSensorAtStation { .. } => StatusCode::NOT_FOUND,
+                route_planner::PlanError::StationFull { .. } => StatusCode::CONFLICT,
                 route_planner::PlanError::Layout(_) => StatusCode::INTERNAL_SERVER_ERROR,
             };
             (code, e.to_string())
@@ -455,7 +473,7 @@ async fn route_handler(
 
 async fn route_execute_handler(
     State(state): State<AppState>,
-    Json(body): Json<InitialiseRequest>,
+    Json(body): Json<RouteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
         .execute_routes_json(body)

@@ -8,6 +8,9 @@ use thiserror::Error;
 
 pub const MAX_TRAINS: usize = 6;
 
+/// Maximum trains accepted by the station route planner.
+pub const MAX_ROUTE_TRAINS: usize = 5;
+
 /// Default path for INITIALISE payload (gitignored).
 pub fn trains_path() -> std::path::PathBuf {
     Path::new("data/runtime/trains.json").to_path_buf()
@@ -28,15 +31,108 @@ pub struct InitialiseRequest {
     pub trains: Vec<TrainPosition>,
 }
 
+/// The direction a train is facing on its current sensor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrainDirection {
+    Fwd,
+    Bwd,
+}
+
+impl Default for TrainDirection {
+    fn default() -> Self {
+        Self::Fwd
+    }
+}
+
+impl std::fmt::Display for TrainDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fwd => write!(f, "fwd"),
+            Self::Bwd => write!(f, "bwd"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainPosition {
     /// Logical train identifier (e.g. 1, 2, …).
     pub train: u8,
     /// Which sensor currently detects this train (1–24).
     pub sensor: u8,
+    /// Direction the train is facing (default: "fwd").
+    #[serde(default)]
+    pub direction: TrainDirection,
     /// Target sensor for this train (optional; used by route planner).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destination: Option<u8>,
+}
+
+// ---------------------------------------------------------------------------
+// Station-based route request (POST /route)
+// ---------------------------------------------------------------------------
+
+/// Arrival direction at a station.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum ArrivalDirection {
+    Fwd,
+    #[serde(rename = "BCK")]
+    Bck,
+}
+
+impl std::fmt::Display for ArrivalDirection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fwd => write!(f, "FWD"),
+            Self::Bck => write!(f, "BCK"),
+        }
+    }
+}
+
+/// One train in a station-based route request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteTrainRequest {
+    /// Logical train identifier (≥ 1, unique).
+    pub train: u8,
+    /// Sensor the train is currently on (1–24).
+    pub sensor: u8,
+    /// Target station name (must match a station in the layout).
+    pub station: String,
+    /// Required arrival direction at the station.
+    pub arrival: ArrivalDirection,
+}
+
+/// Request body for `POST /route` — send trains to stations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteRequest {
+    pub trains: Vec<RouteTrainRequest>,
+}
+
+impl RouteRequest {
+    pub fn validate(&self) -> Result<(), StateError> {
+        if self.trains.len() > MAX_ROUTE_TRAINS {
+            return Err(StateError::TooManyTrains(self.trains.len()));
+        }
+        let mut seen_ids = std::collections::HashSet::new();
+        for t in &self.trains {
+            if t.train == 0 {
+                return Err(StateError::InvalidTrainId(t.train));
+            }
+            if !seen_ids.insert(t.train) {
+                return Err(StateError::DuplicateTrainId(t.train));
+            }
+            if !(1..=24).contains(&t.sensor) {
+                return Err(StateError::InvalidSensor(t.sensor));
+            }
+            if t.station.is_empty() {
+                return Err(StateError::InvalidStation(
+                    "station name cannot be empty".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -49,6 +145,8 @@ pub enum StateError {
     InvalidTrainId(u8),
     #[error("duplicate train id {0}")]
     DuplicateTrainId(u8),
+    #[error("invalid station: {0}")]
+    InvalidStation(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
@@ -173,6 +271,7 @@ mod tests {
         TrainPosition {
             train,
             sensor,
+            direction: TrainDirection::default(),
             destination: None,
         }
     }
@@ -217,6 +316,7 @@ mod tests {
             trains: vec![TrainPosition {
                 train: 1,
                 sensor: 1,
+                direction: TrainDirection::default(),
                 destination: Some(99),
             }],
         };
@@ -254,8 +354,44 @@ mod tests {
         assert_eq!(loaded.trains.len(), 2);
         assert_eq!(loaded.trains[0].train, 1);
         assert_eq!(loaded.trains[0].sensor, 3);
+        assert_eq!(loaded.trains[0].direction, TrainDirection::Fwd);
         assert_eq!(loaded.trains[1].train, 2);
         assert_eq!(loaded.trains[1].sensor, 18);
+    }
+
+    #[test]
+    fn direction_defaults_to_fwd() {
+        let json = r#"{"trains":[{"train":1,"sensor":5}]}"#;
+        let req: InitialiseRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.trains[0].direction, TrainDirection::Fwd);
+    }
+
+    #[test]
+    fn direction_parses_fwd() {
+        let json = r#"{"trains":[{"train":1,"sensor":5,"direction":"fwd"}]}"#;
+        let req: InitialiseRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.trains[0].direction, TrainDirection::Fwd);
+    }
+
+    #[test]
+    fn direction_parses_bwd() {
+        let json = r#"{"trains":[{"train":1,"sensor":5,"direction":"bwd"}]}"#;
+        let req: InitialiseRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.trains[0].direction, TrainDirection::Bwd);
+    }
+
+    #[test]
+    fn direction_serializes_lowercase() {
+        let req = InitialiseRequest {
+            trains: vec![TrainPosition {
+                train: 1,
+                sensor: 5,
+                direction: TrainDirection::Bwd,
+                destination: None,
+            }],
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""direction":"bwd""#));
     }
 
     #[test]

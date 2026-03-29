@@ -46,7 +46,7 @@ Registers which trains are on the layout and which sensor each train is currentl
 {
   "trains": [
     { "train": 1, "sensor": 21 },
-    { "train": 2, "sensor": 22 }
+    { "train": 2, "sensor": 22, "direction": "bwd" }
   ]
 }
 ```
@@ -56,13 +56,15 @@ Registers which trains are on the layout and which sensor each train is currentl
 | `trains` | array | yes | List of train positions (max 6) |
 | `trains[].train` | integer (u8) | yes | Train identifier (must be ≥ 1, unique within the request) |
 | `trains[].sensor` | integer (u8) | yes | Sensor the train is currently on (1–24) |
-| `trains[].destination` | integer (u8) | no | Target sensor (used by `/route` and `/route/execute`) |
+| `trains[].direction` | string | no | Direction the train is facing: `"fwd"` or `"bwd"` (default: `"fwd"`) |
+| `trains[].destination` | integer (u8) | no | Target sensor (used internally by automation) |
 
 **Validation rules:**
 - At most **6** trains
 - `train` must be ≥ 1
 - No duplicate `train` ids
 - `sensor` must be 1–24
+- `direction` (if present) must be `"fwd"` or `"bwd"`; omitted defaults to `"fwd"`
 - `destination` (if present) must be 1–24
 
 **Response (success):**
@@ -114,7 +116,7 @@ Uses the same `InitialiseRequest` format but with `destination` set on each trai
 The same operations are available in the interactive REPL (`cargo run` without `--serve`):
 
 ```
-/initialise {"trains":[{"train":1,"sensor":21},{"train":2,"sensor":22}]}
+/initialise {"trains":[{"train":1,"sensor":21},{"train":2,"sensor":22,"direction":"bwd"}]}
 /route {"trains":[{"train":1,"sensor":1,"destination":5}]}
 /program {"any":"json"}
 /automatic
@@ -139,10 +141,10 @@ The same operations are available in the interactive REPL (`cargo run` without `
 ## Examples (curl)
 
 ```bash
-# Register two trains
+# Register two trains (train 2 is facing backward)
 curl -s -X POST http://127.0.0.1:8080/initialise \
   -H 'Content-Type: application/json' \
-  -d '{"trains":[{"train":1,"sensor":21},{"train":2,"sensor":22}]}'
+  -d '{"trains":[{"train":1,"sensor":21},{"train":2,"sensor":22,"direction":"bwd"}]}'
 
 # Plan a route
 curl -s -X POST http://127.0.0.1:8080/route \

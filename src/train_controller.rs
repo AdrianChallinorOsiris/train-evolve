@@ -327,6 +327,7 @@ impl TrainController {
         let trains_for_planner = vec![TrainPosition {
             train: (train_index + 1) as u8,
             sensor: train.current_sensor,
+            direction: crate::state::TrainDirection::default(),
             destination: Some(destination),
         }];
         let plans = route_planner::plan_routes_with_graph(&trains_for_planner, &self.graph)
@@ -637,11 +638,13 @@ mod tests {
             TrainPosition {
                 train: 1,
                 sensor: 1,
+                direction: crate::state::TrainDirection::default(),
                 destination: None,
             },
             TrainPosition {
                 train: 2,
                 sensor: 10,
+                direction: crate::state::TrainDirection::default(),
                 destination: None,
             },
         ]
