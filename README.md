@@ -81,8 +81,9 @@ After each assistant reply, the REPL prints **tokens for this turn** and a **ses
 | `POST` | `/evolve` | (optional) | One evolution iteration (build → agent → verify → git wrap-up). Response includes `session` (from `DAY_COUNT`, a run counter). |
 | `POST` | `/initialise` | JSON: `{ "trains": [ { "train": 1, "sensor": 4 }, { "train": 2, "sensor": 7, "direction": "bwd" } ] }` | Register trains on the layout; up to **6** trains. See [docs/API.md](docs/API.md) |
 | `POST` | `/program` | JSON (any) | Placeholder; saves payload to `data/runtime/program.json` for a future track program |
-| `POST` | `/route` | JSON: `{ "trains": [ { "train": 1, "sensor": 1, "destination": 5 } ] }` | Compute routes for trains with destinations. See [docs/API.md](docs/API.md) |
-| `POST` | `/route/execute` | (same as `/route`) | Compute and execute routes on Pi hardware |
+| `POST` | `/simulate` | JSON (same format as `/initialise`) | **Dry-run** route plan — review tracks, points, steps before executing. See [docs/API.md](docs/API.md) |
+| `POST` | `/route` | JSON (same format as `/initialise`) | Plan routes from current positions to target state. See [docs/API.md](docs/API.md) |
+| `POST` | `/route/execute` | (same as `/route`) | Plan and execute routes on Pi hardware |
 | `POST` | `/automatic` | — | **Boss-level** automation: loads `data/runtime/trains.json` (call `/initialise` first), saves a snapshot, runs a loop until `/stop` (timetable + Pi hardware integration is still a placeholder) |
 | `POST` | `/stop` | — | Stops `/automatic` and restores **saved** train positions (`data/runtime/trains.json` from the snapshot at `/automatic` start). Moving real trains on the Pi is not implemented yet — that will use the track API later. |
 

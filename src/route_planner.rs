@@ -90,18 +90,10 @@ pub enum PlanError {
         from: u8,
         to: u8,
     },
-    #[error("unknown station \"{name}\" for train {train_id}")]
-    UnknownStation { train_id: u8, name: String },
-    #[error(
-        "no sensor at station \"{station}\" reachable with arrival {arrival} for train {train_id}"
-    )]
-    NoSensorAtStation {
-        train_id: u8,
-        station: String,
-        arrival: String,
-    },
-    #[error("station \"{station}\" fully occupied; no safe waiting position for train {train_id}")]
-    StationFull { train_id: u8, station: String },
+    #[error("train {train_id} not found in current positions — run /initialise first")]
+    TrainNotFound { train_id: u8 },
+    #[error("no current train state — POST /initialise before /route")]
+    NoCurrentState,
     #[error("layout load/validate error: {0}")]
     Layout(String),
 }
@@ -267,314 +259,344 @@ fn load_and_validate_layout() -> Result<TrackLayout, PlanError> {
 }
 
 // ---------------------------------------------------------------------------
-// Station-based route planning
+// Target-based route planning (POST /route)
+//
+// The route command takes the same format as /initialise — an InitialiseRequest
+// describing where each train should end up and which direction it should face.
+// Current positions are loaded from data/runtime/trains.json.
+//
+// The planner produces a RoutePlan: an ordered list of steps that can be
+// executed sequentially. Each step either energises a track, sets a point,
+// or de-energises a track. No two trains may occupy the same track
+// simultaneously. Tracks are de-energised after a train leaves.
+// Points are never reset — the track hardware handles that automatically.
 // ---------------------------------------------------------------------------
 
 use crate::layout::graph::TraverseDirection;
-use crate::state::{ArrivalDirection, RouteRequest};
-use std::collections::{BTreeSet, HashMap};
+use crate::state::{InitialiseRequest, TrainDirection};
+use std::collections::{BTreeMap, BTreeSet};
 
-/// Result of planning a station route for one train.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StationRouteResult {
-    /// Train identifier from the request.
-    pub train: u8,
-    /// Starting sensor.
-    pub from_sensor: u8,
-    /// Station name.
-    pub station: String,
-    /// Requested arrival direction.
-    pub arrival: String,
-    /// The chosen destination sensor at the station (if routed).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub to_sensor: Option<u8>,
-    /// Whether the train is waiting (station full) vs routed.
-    pub waiting: bool,
-    /// If waiting, which sensor the train should wait at.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wait_sensor: Option<u8>,
-    /// Human-readable description.
-    pub description: String,
-    /// Planned route (if routed, not waiting).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub route: Option<PlannedRoute>,
+/// One step in a route execution plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum RouteStep {
+    /// Set a point before a train enters the next track.
+    SetPoint {
+        train: u8,
+        point_id: u8,
+        direction: PointDirection,
+    },
+    /// Energise a track segment so a train can move onto it.
+    EnergiseTrack {
+        train: u8,
+        track_id: u8,
+        direction: TrackDirection,
+        speed: u8,
+    },
+    /// Wait for a train to reach a sensor (confirms train has arrived).
+    AwaitSensor {
+        train: u8,
+        sensor: u8,
+        /// Human note about what we're waiting for.
+        note: String,
+    },
+    /// De-energise a track after the train has left it.
+    DeEnergiseTrack { train: u8, track_id: u8 },
 }
 
-/// Plan station routes for all trains in a `RouteRequest`.
+impl std::fmt::Display for RouteStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RouteStep::SetPoint {
+                train,
+                point_id,
+                direction,
+            } => write!(f, "Train {train}: SET POINT {point_id} → {direction}"),
+            RouteStep::EnergiseTrack {
+                train,
+                track_id,
+                direction,
+                speed,
+            } => write!(
+                f,
+                "Train {train}: ENERGISE TRACK {track_id} → {direction} @ {speed}%"
+            ),
+            RouteStep::AwaitSensor {
+                train,
+                sensor,
+                note,
+            } => write!(f, "Train {train}: AWAIT SENSOR {sensor} ({note})"),
+            RouteStep::DeEnergiseTrack { train, track_id } => {
+                write!(f, "Train {train}: DE-ENERGISE TRACK {track_id}")
+            }
+        }
+    }
+}
+
+/// A complete plan for routing one train from its current position to a target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrainRoutePlan {
+    /// Train identifier.
+    pub train: u8,
+    /// Current sensor.
+    pub from_sensor: u8,
+    /// Target sensor.
+    pub to_sensor: u8,
+    /// Target direction the train should face on arrival.
+    pub target_direction: String,
+    /// Track segments this route passes through (in order).
+    pub track_ids: Vec<u8>,
+    /// Number of sensor hops.
+    pub hop_count: usize,
+    /// Human-readable description of the route.
+    pub description: String,
+    /// Ordered steps to execute.
+    pub steps: Vec<RouteStep>,
+    /// True if the train is already at the target.
+    pub already_there: bool,
+}
+
+/// Full route plan for all trains.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoutePlan {
+    /// Per-train plans.
+    pub trains: Vec<TrainRoutePlan>,
+    /// Warnings (e.g. track conflicts requiring sequencing).
+    pub warnings: Vec<String>,
+}
+
+/// Plan routes from current positions to targets.
 ///
-/// For each train:
-/// 1. Look up the target station's sensors
-/// 2. Pick a sensor that matches the arrival direction and isn't occupied
-/// 3. If all sensors are occupied, find a safe waiting position
-/// 4. Plan the route (or waiting move) avoiding conflicts with other trains
-pub fn plan_station_routes(req: &RouteRequest) -> Result<Vec<StationRouteResult>, PlanError> {
+/// `current` — the current state (from `/initialise`, saved in `data/runtime/trains.json`).
+/// `target` — the desired end state (same format).
+///
+/// Each train in `target` must have a matching `train` id in `current`.
+pub fn plan_target_routes(
+    current: &InitialiseRequest,
+    target: &InitialiseRequest,
+) -> Result<RoutePlan, PlanError> {
     let layout = load_and_validate_layout()?;
     let graph = TrackGraph::from_layout(&layout);
-    plan_station_routes_with(req, &layout, &graph)
+    plan_target_routes_with(current, target, &graph)
 }
 
-/// Plan station routes using a pre-built layout and graph (testable without I/O).
-pub fn plan_station_routes_with(
-    req: &RouteRequest,
-    layout: &TrackLayout,
+/// Plan target routes using a pre-built graph (testable without I/O).
+pub fn plan_target_routes_with(
+    current: &InitialiseRequest,
+    target: &InitialiseRequest,
     graph: &TrackGraph,
-) -> Result<Vec<StationRouteResult>, PlanError> {
-    // Build station name → sensor list lookup.
-    let station_map: HashMap<String, Vec<u8>> = layout
-        .stations
-        .iter()
-        .map(|s| (s.name.to_lowercase(), s.sensor_ids.clone()))
-        .collect();
+) -> Result<RoutePlan, PlanError> {
+    // Build current position lookup: train_id → (sensor, direction)
+    let current_map: BTreeMap<u8, &crate::state::TrainPosition> =
+        current.trains.iter().map(|t| (t.train, t)).collect();
 
-    // Track which sensors are occupied (by trains in this request).
-    let mut occupied_sensors: BTreeSet<u8> = req.trains.iter().map(|t| t.sensor).collect();
-    // Track which track segments are reserved by already-planned routes.
+    let mut train_plans = Vec::new();
+    let mut warnings = Vec::new();
+    // Track segments reserved by trains that have already been planned.
     let mut reserved_segments: BTreeSet<u8> = BTreeSet::new();
 
-    let mut results = Vec::new();
+    for target_train in &target.trains {
+        let cur = current_map
+            .get(&target_train.train)
+            .ok_or(PlanError::TrainNotFound {
+                train_id: target_train.train,
+            })?;
 
-    for train_req in &req.trains {
-        let station_key = train_req.station.to_lowercase();
-        let station_sensors =
-            station_map
-                .get(&station_key)
-                .ok_or_else(|| PlanError::UnknownStation {
-                    train_id: train_req.train,
-                    name: train_req.station.clone(),
-                })?;
-
-        // Try to find an available sensor at the station matching the arrival direction.
-        let result = pick_station_sensor_and_route(
-            train_req,
-            station_sensors,
-            &occupied_sensors,
+        let plan = plan_single_train(
+            target_train.train,
+            cur.sensor,
+            target_train.sensor,
+            target_train.direction,
             &reserved_segments,
             graph,
-            layout,
-        );
+        )?;
 
-        match result {
-            StationPick::Routed { sensor, plan } => {
-                // Reserve the track segments.
-                for &tid in &plan.track_ids {
-                    reserved_segments.insert(tid);
-                }
-                // Mark the destination sensor as occupied.
-                occupied_sensors.insert(sensor);
-
-                results.push(StationRouteResult {
-                    train: train_req.train,
-                    from_sensor: train_req.sensor,
-                    station: train_req.station.clone(),
-                    arrival: train_req.arrival.to_string(),
-                    to_sensor: Some(sensor),
-                    waiting: false,
-                    wait_sensor: None,
-                    description: plan.description.clone(),
-                    route: Some(plan),
-                });
-                // If the train moved away from its starting sensor, free that sensor.
-                if train_req.sensor != sensor {
-                    occupied_sensors.remove(&train_req.sensor);
-                }
-            }
-            StationPick::AlreadyAtStation { sensor } => {
-                results.push(StationRouteResult {
-                    train: train_req.train,
-                    from_sensor: train_req.sensor,
-                    station: train_req.station.clone(),
-                    arrival: train_req.arrival.to_string(),
-                    to_sensor: Some(sensor),
-                    waiting: false,
-                    wait_sensor: None,
-                    description: format!(
-                        "Train {} already at station {} (sensor {})",
-                        train_req.train, train_req.station, sensor
-                    ),
-                    route: None,
-                });
-            }
-            StationPick::Wait { wait_at, reason } => {
-                results.push(StationRouteResult {
-                    train: train_req.train,
-                    from_sensor: train_req.sensor,
-                    station: train_req.station.clone(),
-                    arrival: train_req.arrival.to_string(),
-                    to_sensor: None,
-                    waiting: true,
-                    wait_sensor: Some(wait_at),
-                    description: reason,
-                    route: None,
-                });
-            }
-            StationPick::NoRoute => {
-                return Err(PlanError::StationFull {
-                    train_id: train_req.train,
-                    station: train_req.station.clone(),
-                });
+        // Check for track conflicts with other planned trains.
+        for &tid in &plan.track_ids {
+            if reserved_segments.contains(&tid) {
+                warnings.push(format!(
+                    "Train {} needs track {} which is reserved by another train — \
+                     trains must be sequenced (move one at a time through shared tracks)",
+                    target_train.train, tid
+                ));
             }
         }
+
+        // Reserve tracks for this train.
+        for &tid in &plan.track_ids {
+            reserved_segments.insert(tid);
+        }
+
+        train_plans.push(plan);
     }
 
-    Ok(results)
+    Ok(RoutePlan {
+        trains: train_plans,
+        warnings,
+    })
 }
 
-/// Internal result of trying to route a train to a station.
-enum StationPick {
-    /// Successfully routed to a specific sensor at the station.
-    Routed { sensor: u8, plan: PlannedRoute },
-    /// Train is already at the station.
-    AlreadyAtStation { sensor: u8 },
-    /// Station is full; train should wait at this sensor.
-    Wait { wait_at: u8, reason: String },
-    /// No route or waiting position could be found.
-    NoRoute,
-}
-
-/// Try to pick a sensor at the station and plan a route.
-///
-/// Strategy:
-/// 1. If the train is already on a station sensor, done.
-/// 2. Find station sensors reachable with the correct arrival direction and not occupied.
-/// 3. If none free, find a safe waiting position.
-fn pick_station_sensor_and_route(
-    train_req: &crate::state::RouteTrainRequest,
-    station_sensors: &[u8],
-    occupied: &BTreeSet<u8>,
+/// Plan a single train's route from current sensor to target sensor.
+fn plan_single_train(
+    train_id: u8,
+    from_sensor: u8,
+    to_sensor: u8,
+    target_direction: TrainDirection,
     reserved: &BTreeSet<u8>,
     graph: &TrackGraph,
-    layout: &TrackLayout,
-) -> StationPick {
-    // 1. Already at the station?
-    if station_sensors.contains(&train_req.sensor) {
-        return StationPick::AlreadyAtStation {
-            sensor: train_req.sensor,
-        };
-    }
-
-    // 2. Find available station sensors matching the arrival direction.
-    let mut candidates: Vec<(u8, Route, PlannedRoute)> = Vec::new();
-    for &ss in station_sensors {
-        if occupied.contains(&ss) {
-            continue;
-        }
-        if let Some(route) = graph.find_route(train_req.sensor, ss) {
-            // Check arrival direction: the last hop's traverse_direction
-            // tells us how the train arrives on the destination track.
-            if !route.hops.is_empty() {
-                let last_hop = route.hops.last().unwrap();
-                let arrives_fwd = last_hop.traverse_direction == TraverseDirection::Fwd;
-                let wanted_fwd = train_req.arrival == ArrivalDirection::Fwd;
-                if arrives_fwd != wanted_fwd {
-                    continue;
-                }
-            }
-            // Check that route segments don't conflict with reserved.
-            let route_segments: BTreeSet<u8> = route.hops.iter().map(|h| h.track_id).collect();
-            if !route_segments.is_disjoint(reserved) {
-                continue;
-            }
-            let plan = route_to_plan(0, &route, graph);
-            candidates.push((ss, route, plan));
-        }
-    }
-
-    // Prefer the shortest route.
-    candidates.sort_by_key(|(_, route, _)| route.hops.len());
-
-    if let Some((sensor, _route, plan)) = candidates.into_iter().next() {
-        return StationPick::Routed { sensor, plan };
-    }
-
-    // 3. Station is full or no matching arrival direction available.
-    //    Find a safe waiting position: a sensor on the route toward the station
-    //    that doesn't block any existing train's exit path.
-    find_safe_waiting_position(
-        train_req,
-        station_sensors,
-        occupied,
-        reserved,
-        graph,
-        layout,
-    )
-}
-
-/// Find a safe sensor to wait at when the station is full.
-///
-/// We look for a sensor on the path toward the station that:
-/// - Is not occupied
-/// - Doesn't block the exit of any train currently at the station
-///
-/// For constrained stations like "industrial" (track 12, sensor 23),
-/// the only exit is BWD from T12 → T2. We must not block track 2 or
-/// place the waiting train on a sensor that prevents the occupant from leaving.
-fn find_safe_waiting_position(
-    train_req: &crate::state::RouteTrainRequest,
-    station_sensors: &[u8],
-    occupied: &BTreeSet<u8>,
-    reserved: &BTreeSet<u8>,
-    graph: &TrackGraph,
-    _layout: &TrackLayout,
-) -> StationPick {
-    // Find exit tracks from each occupied station sensor.
-    // An exit track is any track segment used by edges leaving the station sensor.
-    let mut blocked_segments: BTreeSet<u8> = BTreeSet::new();
-    for &ss in station_sensors {
-        if !occupied.contains(&ss) {
-            continue;
-        }
-        // All edges from this sensor = possible exit routes.
-        if let Some(edges) = graph.edges.get(&ss) {
-            for edge in edges {
-                if edge.to != 0 {
-                    blocked_segments.insert(edge.track_id);
-                }
-            }
-        }
-    }
-
-    // Try to find a route to any station sensor (even occupied) and pick
-    // an intermediate sensor that's safe to wait at.
-    for &ss in station_sensors {
-        if let Some(route) = graph.find_route(train_req.sensor, ss) {
-            // Walk backward from the destination to find a safe waiting sensor.
-            for hop in route.hops.iter().rev() {
-                let wait_sensor = hop.from;
-                if occupied.contains(&wait_sensor) {
-                    continue;
-                }
-                // Don't wait on a segment that blocks an occupied train's exit.
-                if blocked_segments.contains(&hop.track_id) {
-                    continue;
-                }
-                // Don't conflict with already-reserved segments.
-                if reserved.contains(&hop.track_id) {
-                    continue;
-                }
-                return StationPick::Wait {
-                    wait_at: wait_sensor,
-                    reason: format!(
-                        "Train {} waiting at sensor {} — station {} is full; \
-                         will proceed when a platform clears",
-                        train_req.train, wait_sensor, train_req.station
-                    ),
-                };
-            }
-        }
-    }
-
-    // Last resort: stay where you are if that doesn't block anything.
-    if !blocked_segments.contains(graph.sensor_track.get(&train_req.sensor).unwrap_or(&0)) {
-        return StationPick::Wait {
-            wait_at: train_req.sensor,
-            reason: format!(
-                "Train {} holding at sensor {} — station {} is full",
-                train_req.train, train_req.sensor, train_req.station
+) -> Result<TrainRoutePlan, PlanError> {
+    // Already there?
+    if from_sensor == to_sensor {
+        return Ok(TrainRoutePlan {
+            train: train_id,
+            from_sensor,
+            to_sensor,
+            target_direction: target_direction.to_string(),
+            track_ids: vec![],
+            hop_count: 0,
+            description: format!(
+                "Train {} already at sensor {} — no movement needed.",
+                train_id, from_sensor
             ),
-        };
+            steps: vec![],
+            already_there: true,
+        });
     }
 
-    StationPick::NoRoute
+    // Find a route.
+    let route = graph
+        .find_route(from_sensor, to_sensor)
+        .ok_or(PlanError::NoRoute {
+            train_index: 0,
+            from: from_sensor,
+            to: to_sensor,
+        })?;
+
+    // Check the arrival direction matches the target.
+    // The last hop's traverse_direction tells us which way the train arrives.
+    let arrives_fwd = if let Some(last_hop) = route.hops.last() {
+        last_hop.traverse_direction == TraverseDirection::Fwd
+    } else {
+        true
+    };
+    let target_fwd = target_direction == TrainDirection::Fwd;
+
+    let mut route_warnings = Vec::new();
+    if arrives_fwd != target_fwd {
+        route_warnings.push(format!(
+            "Train {} arrives {} but target direction is {} — \
+             the route reaches sensor {} from the {} direction",
+            train_id,
+            if arrives_fwd { "fwd" } else { "bwd" },
+            target_direction,
+            to_sensor,
+            if arrives_fwd { "forward" } else { "backward" },
+        ));
+    }
+
+    let point_settings = route.point_settings();
+    let track_ids = route.track_ids();
+
+    // Check for reserved track conflicts.
+    let mut conflicts = Vec::new();
+    for &tid in &track_ids {
+        if reserved.contains(&tid) {
+            conflicts.push(tid);
+        }
+    }
+
+    // Build execution steps: for each hop, set points → energise track → await sensor → de-energise.
+    let mut steps = Vec::new();
+
+    // Track which tracks the train is currently powering (for de-energise).
+    let mut prev_track: Option<u8> = None;
+
+    // Group hops by track segment to determine per-track direction.
+    let mut track_direction: BTreeMap<u8, TrackDirection> = BTreeMap::new();
+    for hop in &route.hops {
+        track_direction
+            .entry(hop.track_id)
+            .or_insert_with(|| match hop.traverse_direction {
+                TraverseDirection::Fwd => TrackDirection::Fwd,
+                TraverseDirection::Bck => TrackDirection::Bck,
+            });
+    }
+
+    // Set all required points up front (before any movement).
+    for ps in &point_settings {
+        steps.push(RouteStep::SetPoint {
+            train: train_id,
+            point_id: ps.point_id,
+            direction: ps.direction,
+        });
+    }
+
+    // Now walk through hops: energise tracks as needed, await sensors, de-energise.
+    for hop in &route.hops {
+        let current_track = hop.track_id;
+
+        // If we've moved to a new track segment, de-energise the old one.
+        if let Some(pt) = prev_track {
+            if pt != current_track {
+                steps.push(RouteStep::DeEnergiseTrack {
+                    train: train_id,
+                    track_id: pt,
+                });
+            }
+        }
+
+        // Energise the current track if we haven't already (or if we just de-energised it).
+        let need_energise = prev_track != Some(current_track);
+        if need_energise {
+            let direction = track_direction
+                .get(&current_track)
+                .copied()
+                .unwrap_or(TrackDirection::Fwd);
+            steps.push(RouteStep::EnergiseTrack {
+                train: train_id,
+                track_id: current_track,
+                direction,
+                speed: DEFAULT_ROUTE_SPEED,
+            });
+        }
+
+        // Await the destination sensor of this hop.
+        steps.push(RouteStep::AwaitSensor {
+            train: train_id,
+            sensor: hop.to,
+            note: format!("train {} reaching sensor {}", train_id, hop.to),
+        });
+
+        prev_track = Some(current_track);
+    }
+
+    // De-energise the final track after the train arrives.
+    if let Some(pt) = prev_track {
+        steps.push(RouteStep::DeEnergiseTrack {
+            train: train_id,
+            track_id: pt,
+        });
+    }
+
+    // Build description.
+    let description = describe_route(&route, &point_settings, &track_ids, graph);
+    let full_description = if route_warnings.is_empty() {
+        description
+    } else {
+        format!("{}. WARNING: {}", description, route_warnings.join("; "))
+    };
+
+    Ok(TrainRoutePlan {
+        train: train_id,
+        from_sensor,
+        to_sensor,
+        target_direction: target_direction.to_string(),
+        track_ids: track_ids.clone(),
+        hop_count: route.hops.len(),
+        description: full_description,
+        steps,
+        already_there: false,
+    })
 }
 
 #[cfg(test)]
@@ -831,5 +853,201 @@ mod tests {
             "route 2→1 should use BCK on track 1, got: {:?}",
             track_cmds
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Target-based route planner tests
+    // -----------------------------------------------------------------------
+
+    fn make_train(train: u8, sensor: u8) -> crate::state::TrainPosition {
+        crate::state::TrainPosition {
+            train,
+            sensor,
+            direction: TrainDirection::Fwd,
+            destination: None,
+        }
+    }
+
+    fn make_train_dir(
+        train: u8,
+        sensor: u8,
+        direction: TrainDirection,
+    ) -> crate::state::TrainPosition {
+        crate::state::TrainPosition {
+            train,
+            sensor,
+            direction,
+            destination: None,
+        }
+    }
+
+    #[test]
+    fn target_route_already_there() {
+        let graph = test_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 5)],
+        };
+        let target = InitialiseRequest {
+            trains: vec![make_train(1, 5)],
+        };
+        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        assert_eq!(plan.trains.len(), 1);
+        assert!(plan.trains[0].already_there);
+        assert!(plan.trains[0].steps.is_empty());
+    }
+
+    #[test]
+    fn target_route_adjacent_sensor() {
+        let graph = test_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 1)],
+        };
+        let target = InitialiseRequest {
+            trains: vec![make_train(1, 2)],
+        };
+        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        assert_eq!(plan.trains.len(), 1);
+        assert!(!plan.trains[0].already_there);
+        assert_eq!(plan.trains[0].from_sensor, 1);
+        assert_eq!(plan.trains[0].to_sensor, 2);
+
+        // Should contain: set points (if any), energise track, await sensor, de-energise.
+        let has_energise = plan.trains[0]
+            .steps
+            .iter()
+            .any(|s| matches!(s, RouteStep::EnergiseTrack { .. }));
+        let has_await = plan.trains[0]
+            .steps
+            .iter()
+            .any(|s| matches!(s, RouteStep::AwaitSensor { .. }));
+        let has_deenergise = plan.trains[0]
+            .steps
+            .iter()
+            .any(|s| matches!(s, RouteStep::DeEnergiseTrack { .. }));
+        assert!(has_energise, "should energise a track");
+        assert!(has_await, "should await a sensor");
+        assert!(has_deenergise, "should de-energise track after arrival");
+    }
+
+    #[test]
+    fn target_route_train_not_found() {
+        let graph = test_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 1)],
+        };
+        let target = InitialiseRequest {
+            trains: vec![make_train(99, 2)],
+        };
+        let err = plan_target_routes_with(&current, &target, &graph).unwrap_err();
+        assert!(err.to_string().contains("train 99"));
+    }
+
+    #[test]
+    fn target_route_cross_track() {
+        let graph = test_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 3)],
+        };
+        let target = InitialiseRequest {
+            trains: vec![make_train(1, 4)],
+        };
+        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        assert!(!plan.trains[0].already_there);
+        // Route should exist and have at least one track.
+        assert!(
+            !plan.trains[0].track_ids.is_empty(),
+            "route should use at least one track"
+        );
+
+        // Should de-energise each track after leaving it.
+        let deenergise_count = plan.trains[0]
+            .steps
+            .iter()
+            .filter(|s| matches!(s, RouteStep::DeEnergiseTrack { .. }))
+            .count();
+        assert!(deenergise_count >= 1, "should de-energise at least 1 track");
+    }
+
+    #[test]
+    fn target_route_two_trains_reserves_tracks() {
+        let graph = test_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 1), make_train(2, 10)],
+        };
+        let target = InitialiseRequest {
+            trains: vec![make_train(1, 3), make_train(2, 12)],
+        };
+        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        assert_eq!(plan.trains.len(), 2);
+        assert_eq!(plan.trains[0].train, 1);
+        assert_eq!(plan.trains[1].train, 2);
+    }
+
+    #[test]
+    fn target_route_direction_warning() {
+        let graph = test_graph();
+        // Train at sensor 1, target sensor 2 with direction bwd.
+        // Route 1→2 is forward on track 1, so arrival is fwd — but target wants bwd.
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 1)],
+        };
+        let target = InitialiseRequest {
+            trains: vec![make_train_dir(1, 2, TrainDirection::Bwd)],
+        };
+        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        assert!(
+            plan.trains[0].description.contains("WARNING"),
+            "should warn about direction mismatch: {}",
+            plan.trains[0].description
+        );
+    }
+
+    #[test]
+    fn target_route_step_display() {
+        let step = RouteStep::SetPoint {
+            train: 1,
+            point_id: 5,
+            direction: PointDirection::Branch,
+        };
+        assert_eq!(step.to_string(), "Train 1: SET POINT 5 → BRANCH");
+
+        let step = RouteStep::EnergiseTrack {
+            train: 2,
+            track_id: 3,
+            direction: TrackDirection::Fwd,
+            speed: 40,
+        };
+        assert_eq!(step.to_string(), "Train 2: ENERGISE TRACK 3 → FWD @ 40%");
+
+        let step = RouteStep::AwaitSensor {
+            train: 1,
+            sensor: 7,
+            note: "arriving".into(),
+        };
+        assert_eq!(step.to_string(), "Train 1: AWAIT SENSOR 7 (arriving)");
+
+        let step = RouteStep::DeEnergiseTrack {
+            train: 1,
+            track_id: 4,
+        };
+        assert_eq!(step.to_string(), "Train 1: DE-ENERGISE TRACK 4");
+    }
+
+    #[test]
+    fn target_route_serializes_to_json() {
+        let graph = test_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 1)],
+        };
+        let target = InitialiseRequest {
+            trains: vec![make_train(1, 2)],
+        };
+        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        let json = serde_json::to_value(&plan).unwrap();
+        assert!(json["trains"].is_array());
+        assert_eq!(json["trains"][0]["train"], 1);
+        assert_eq!(json["trains"][0]["from_sensor"], 1);
+        assert_eq!(json["trains"][0]["to_sensor"], 2);
+        assert!(json["trains"][0]["steps"].is_array());
     }
 }

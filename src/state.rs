@@ -69,71 +69,9 @@ pub struct TrainPosition {
 }
 
 // ---------------------------------------------------------------------------
-// Station-based route request (POST /route)
+// Station-based route request (POST /route) — removed; /route now uses
+// InitialiseRequest (same format as /initialise) as the target state.
 // ---------------------------------------------------------------------------
-
-/// Arrival direction at a station.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum ArrivalDirection {
-    Fwd,
-    #[serde(rename = "BCK")]
-    Bck,
-}
-
-impl std::fmt::Display for ArrivalDirection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Fwd => write!(f, "FWD"),
-            Self::Bck => write!(f, "BCK"),
-        }
-    }
-}
-
-/// One train in a station-based route request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RouteTrainRequest {
-    /// Logical train identifier (≥ 1, unique).
-    pub train: u8,
-    /// Sensor the train is currently on (1–24).
-    pub sensor: u8,
-    /// Target station name (must match a station in the layout).
-    pub station: String,
-    /// Required arrival direction at the station.
-    pub arrival: ArrivalDirection,
-}
-
-/// Request body for `POST /route` — send trains to stations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RouteRequest {
-    pub trains: Vec<RouteTrainRequest>,
-}
-
-impl RouteRequest {
-    pub fn validate(&self) -> Result<(), StateError> {
-        if self.trains.len() > MAX_ROUTE_TRAINS {
-            return Err(StateError::TooManyTrains(self.trains.len()));
-        }
-        let mut seen_ids = std::collections::HashSet::new();
-        for t in &self.trains {
-            if t.train == 0 {
-                return Err(StateError::InvalidTrainId(t.train));
-            }
-            if !seen_ids.insert(t.train) {
-                return Err(StateError::DuplicateTrainId(t.train));
-            }
-            if !(1..=24).contains(&t.sensor) {
-                return Err(StateError::InvalidSensor(t.sensor));
-            }
-            if t.station.is_empty() {
-                return Err(StateError::InvalidStation(
-                    "station name cannot be empty".into(),
-                ));
-            }
-        }
-        Ok(())
-    }
-}
 
 #[derive(Debug, Error)]
 pub enum StateError {
@@ -145,8 +83,6 @@ pub enum StateError {
     InvalidTrainId(u8),
     #[error("duplicate train id {0}")]
     DuplicateTrainId(u8),
-    #[error("invalid station: {0}")]
-    InvalidStation(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("JSON error: {0}")]
