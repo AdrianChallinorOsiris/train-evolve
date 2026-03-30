@@ -54,6 +54,17 @@ impl std::fmt::Display for TrainDirection {
     }
 }
 
+impl std::str::FromStr for TrainDirection {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "fwd" => Ok(Self::Fwd),
+            "bwd" => Ok(Self::Bwd),
+            _ => Err(format!("unknown direction: {s}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrainPosition {
     /// Logical train identifier (e.g. 1, 2, …).
@@ -69,9 +80,113 @@ pub struct TrainPosition {
 }
 
 // ---------------------------------------------------------------------------
-// Station-based route request (POST /route) — removed; /route now uses
-// InitialiseRequest (same format as /initialise) as the target state.
+// Route / simulate request (POST /route, POST /simulate)
 // ---------------------------------------------------------------------------
+
+/// A destination for a train: either a specific sensor number or a station name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Destination {
+    /// A specific sensor id (1–24).
+    Sensor(u8),
+    /// A station name (resolved to a sensor at planning time).
+    Station(String),
+}
+
+impl std::fmt::Display for Destination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sensor(id) => write!(f, "{id}"),
+            Self::Station(name) => write!(f, "{name}"),
+        }
+    }
+}
+
+impl Serialize for Destination {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Sensor(id) => serializer.serialize_u8(*id),
+            Self::Station(name) => serializer.serialize_str(name),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Destination {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct DestVisitor;
+        impl<'de> serde::de::Visitor<'de> for DestVisitor {
+            type Value = Destination;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(f, "a sensor number (1–24) or a station name string")
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Destination, E> {
+                if v == 0 || v > 24 {
+                    return Err(E::custom(format!("sensor id {v} out of range 1–24")));
+                }
+                Ok(Destination::Sensor(v as u8))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Destination, E> {
+                if v <= 0 || v > 24 {
+                    return Err(E::custom(format!("sensor id {v} out of range 1–24")));
+                }
+                Ok(Destination::Sensor(v as u8))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Destination, E> {
+                // Try parsing as a number first.
+                if let Ok(n) = v.parse::<u8>() {
+                    if (1..=24).contains(&n) {
+                        return Ok(Destination::Sensor(n));
+                    }
+                }
+                if v.is_empty() {
+                    return Err(E::custom("destination cannot be empty"));
+                }
+                Ok(Destination::Station(v.to_string()))
+            }
+        }
+        deserializer.deserialize_any(DestVisitor)
+    }
+}
+
+/// One train in a route/simulate request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteTrainRequest {
+    /// Logical train identifier (≥ 1, must match a train from /initialise).
+    pub train: u8,
+    /// Where to send the train: a sensor number (1–24) or a station name.
+    pub destination: Destination,
+    /// Direction the train should face on arrival (default: "fwd").
+    #[serde(default)]
+    pub direction: TrainDirection,
+}
+
+/// Request body for `POST /route` and `POST /simulate`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteRequest {
+    pub trains: Vec<RouteTrainRequest>,
+}
+
+impl RouteRequest {
+    pub fn validate(&self) -> Result<(), StateError> {
+        if self.trains.len() > MAX_TRAINS {
+            return Err(StateError::TooManyTrains(self.trains.len()));
+        }
+        let mut seen_ids = std::collections::HashSet::new();
+        for t in &self.trains {
+            if t.train == 0 {
+                return Err(StateError::InvalidTrainId(t.train));
+            }
+            if !seen_ids.insert(t.train) {
+                return Err(StateError::DuplicateTrainId(t.train));
+            }
+            if let Destination::Sensor(s) = &t.destination {
+                if !(1..=24).contains(s) {
+                    return Err(StateError::InvalidSensor(*s));
+                }
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum StateError {

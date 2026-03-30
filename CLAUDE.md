@@ -27,7 +27,7 @@ ANTHROPIC_API_KEY=sk-... cargo run -- --model claude-opus-4-6 --skills ./skills
 # optional: --system path/to/prompt.txt  (custom system prompt file, UTF-8)
 ```
 
-HTTP service (`GET /health`, `GET /journal`, `GET /roadmap`, `POST /evolve`, `POST /initialise`, `POST /program`, `POST /automatic`, `POST /stop`).
+HTTP service (`GET /health`, `GET /journal`, `GET /roadmap`, `POST /evolve`, `POST /initialise`, `POST /simulate`, `POST /route`, `POST /route/execute`, `POST /program`, `POST /automatic`, `POST /stop`).
 Full API reference with JSON formats: [docs/API.md](docs/API.md).
 ```bash
 ANTHROPIC_API_KEY=sk-... cargo run -- --serve

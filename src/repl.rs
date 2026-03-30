@@ -7,7 +7,7 @@ use yoyo::service::{
     initialise_json, journal_response, program_json, roadmap_response, route_json, simulate_json,
     AppState, JOURNAL_FILE, ROADMAP_FILE,
 };
-use yoyo::state::InitialiseRequest;
+use yoyo::state::{InitialiseRequest, RouteRequest};
 
 // ANSI colors (shared with main.rs)
 const RESET: &str = "\x1b[0m";
@@ -45,16 +45,17 @@ pub fn print_repl_help() {
     println!("  {DIM}                        train: id (≥1, unique)  sensor: position (1-24)  direction: fwd|bwd (default fwd)  max 6 trains{RESET}");
     println!("  {GREEN}/program <json>{RESET}      track program placeholder JSON");
     println!(
-        "  {GREEN}/simulate <json>{RESET}     dry-run route plan — same format as /initialise (target state)"
+        "  {GREEN}/simulate <json>{RESET}     dry-run route plan — review tracks, points, steps"
     );
     println!(
-        "  {DIM}                        shows tracks, points, steps without sending commands to hardware{RESET}"
+        "  {DIM}                        e.g. {{\"trains\":[{{\"train\":1,\"destination\":5,\"direction\":\"fwd\"}}]}}{RESET}"
     );
     println!(
-        "  {GREEN}/route <json>{RESET}        plan routes — same format as /initialise (target state)"
+        "  {DIM}                        destination: sensor number (1-24) or station name (\"waterloo\", \"bridge\", ...){RESET}"
     );
+    println!("  {GREEN}/route <json>{RESET}        plan routes — same format as /simulate");
     println!(
-        "  {DIM}                        e.g. {{\"trains\":[{{\"train\":1,\"sensor\":5,\"direction\":\"fwd\"}}]}}{RESET}"
+        "  {DIM}                        e.g. {{\"trains\":[{{\"train\":1,\"destination\":\"waterloo\",\"direction\":\"bwd\"}}]}}{RESET}"
     );
     println!("\n{BOLD}  Pi hardware:{RESET}");
     println!("  {GREEN}/pi status{RESET}  {GREEN}/pi health{RESET}  {GREEN}/pi sensors{RESET}  {GREEN}/pi sensors reset{RESET}");
@@ -297,7 +298,7 @@ pub async fn service_dispatch(line: &str, state: &AppState) -> bool {
         }
         s if s.starts_with("/simulate") => {
             dispatch_json_command(s, "/simulate", |rest| {
-                match serde_json::from_str::<InitialiseRequest>(rest) {
+                match serde_json::from_str::<RouteRequest>(rest) {
                     Ok(body) => match simulate_json(body) {
                         Ok(v) => print_json_pretty(&v),
                         Err(e) => eprintln!("{RED}  simulate: {e}{RESET}"),
@@ -309,7 +310,7 @@ pub async fn service_dispatch(line: &str, state: &AppState) -> bool {
         }
         s if s.starts_with("/route") => {
             dispatch_json_command(s, "/route", |rest| {
-                match serde_json::from_str::<InitialiseRequest>(rest) {
+                match serde_json::from_str::<RouteRequest>(rest) {
                     Ok(body) => match route_json(body) {
                         Ok(v) => print_json_pretty(&v),
                         Err(e) => eprintln!("{RED}  route: {e}{RESET}"),

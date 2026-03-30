@@ -14,9 +14,9 @@ This document describes every HTTP endpoint and the JSON formats used by the yoy
 | `POST` | `/evolve` | — | Run one evolution iteration |
 | `POST` | `/initialise` | [`InitialiseRequest`](#initialiserequest) | Register train positions on the layout |
 | `POST` | `/program` | any JSON | Placeholder — stores payload for future track program |
-| `POST` | `/simulate` | [`InitialiseRequest`](#initialiserequest) | **Dry-run** — show planned route without sending commands to hardware |
-| `POST` | `/route` | [`InitialiseRequest`](#initialiserequest) | Plan routes from current to target positions |
-| `POST` | `/route/execute` | [`InitialiseRequest`](#initialiserequest) | Plan and execute routes on Pi hardware |
+| `POST` | `/simulate` | [`RouteRequest`](#routerequest) | **Dry-run** — show planned route without sending commands to hardware |
+| `POST` | `/route` | [`RouteRequest`](#routerequest) | Plan routes from current to target positions |
+| `POST` | `/route/execute` | [`RouteRequest`](#routerequest) | Plan and execute routes on Pi hardware |
 | `POST` | `/automatic` | — | Start boss-level automation (requires prior `/initialise`) |
 | `GET` | `/automatic/status` | — | Current state of all trains in automatic mode |
 | `POST` | `/stop` | — | Stop automatic mode; restore saved train positions |
@@ -76,15 +76,55 @@ Registers which trains are on the layout and which sensor each train is currentl
 }
 ```
 
-### Simulate (`POST /simulate`)
+### `RouteRequest`
 
-**Dry-run route planning** — takes the exact same input as `/route` but never sends any commands to the hardware. Use this to review which tracks will be energised, which points will be set, and the full step-by-step sequence before committing.
+Used by `/simulate`, `/route`, and `/route/execute`. Describes where each train should end up.
+
+The `destination` field accepts either a **sensor number** (1–24) or a **station name** (e.g. `"waterloo"`, `"bridge"`, `"sidings"`, `"blackheath"`, `"industrial"`). When a station name is given, the planner picks the best available sensor at that station.
 
 ```json
 {
   "trains": [
-    { "train": 1, "sensor": 5, "direction": "fwd" },
-    { "train": 2, "sensor": 23, "direction": "bwd" }
+    { "train": 1, "destination": "waterloo", "direction": "fwd" },
+    { "train": 2, "destination": 23, "direction": "bwd" }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `trains` | array | yes | List of route targets (max 6) |
+| `trains[].train` | integer (u8) | yes | Train identifier (must match a train from `/initialise`) |
+| `trains[].destination` | integer or string | yes | Target: sensor number (1–24) **or** station name |
+| `trains[].direction` | string | no | Direction the train should face on arrival: `"fwd"` or `"bwd"` (default: `"fwd"`) |
+
+**Validation rules:**
+- `train` must match a train registered via `/initialise`
+- No duplicate `train` ids
+- Sensor destinations must be 1–24
+- Station names must match a station in the layout (case-insensitive)
+- `direction` (if present) must be `"fwd"` or `"bwd"`; omitted defaults to `"fwd"`
+
+**Available stations:**
+| Station | Sensors |
+|---------|---------|
+| `waterloo` | 2, 7, 12, 17 |
+| `bridge` | 5, 9, 16 |
+| `sidings` | 18, 19, 20, 21 |
+| `blackheath` | 24 |
+| `industrial` | 23 |
+
+---
+
+### Simulate (`POST /simulate`)
+
+**Dry-run route planning** — takes the exact same input as `/route` ([`RouteRequest`](#routerequest)) but never sends any commands to the hardware. Use this to review which tracks will be energised, which points will be set, and the full step-by-step sequence before committing.
+
+```json
+{
+  "trains": [
+    { "train": 1, "destination": "bridge", "direction": "fwd" },
+    { "train": 2, "destination": 23, "direction": "bwd" }
   ]
 }
 ```
@@ -110,15 +150,15 @@ Review the `plan.trains[].steps` array to see every point set, track energise/de
 
 ### Route request (`POST /route`)
 
-The route command takes the **same format as `/initialise`** — it describes the **target state**: where each train should end up and which direction it should face. The planner reads current positions from the saved `/initialise` data.
+The route command takes [`RouteRequest`](#routerequest) — it describes the **target state**: where each train should end up and which direction it should face. Destinations can be sensor numbers or station names.
 
 **You must call `/initialise` first** to register current train positions.
 
 ```json
 {
   "trains": [
-    { "train": 1, "sensor": 5, "direction": "fwd" },
-    { "train": 2, "sensor": 23, "direction": "bwd" }
+    { "train": 1, "destination": "waterloo", "direction": "fwd" },
+    { "train": 2, "destination": 23, "direction": "bwd" }
   ]
 }
 ```
@@ -182,8 +222,8 @@ The same operations are available in the interactive REPL (`cargo run` without `
 
 ```
 /initialise {"trains":[{"train":1,"sensor":21},{"train":2,"sensor":22,"direction":"bwd"}]}
-/simulate {"trains":[{"train":1,"sensor":5,"direction":"fwd"}]}
-/route {"trains":[{"train":1,"sensor":5,"direction":"fwd"}]}
+/simulate {"trains":[{"train":1,"destination":"waterloo","direction":"fwd"}]}
+/route {"trains":[{"train":1,"destination":"waterloo","direction":"fwd"}]}
 /program {"any":"json"}
 /automatic
 /automatic/status
@@ -215,17 +255,17 @@ curl -s -X POST http://127.0.0.1:8080/initialise \
 # Simulate a route (dry run — review before executing)
 curl -s -X POST http://127.0.0.1:8080/simulate \
   -H 'Content-Type: application/json' \
-  -d '{"trains":[{"train":1,"sensor":5,"direction":"fwd"}]}'
+  -d '{"trains":[{"train":1,"destination":"waterloo","direction":"fwd"}]}'
 
-# Plan a route (target state — same format as /initialise)
+# Plan a route (target state — destination can be sensor number or station name)
 curl -s -X POST http://127.0.0.1:8080/route \
   -H 'Content-Type: application/json' \
-  -d '{"trains":[{"train":1,"sensor":5,"direction":"fwd"}]}'
+  -d '{"trains":[{"train":1,"destination":"bridge"},{"train":2,"destination":23,"direction":"bwd"}]}'
 
 # Plan and execute a route on the Pi
 curl -s -X POST http://127.0.0.1:8080/route/execute \
   -H 'Content-Type: application/json' \
-  -d '{"trains":[{"train":1,"sensor":5,"direction":"fwd"}]}'
+  -d '{"trains":[{"train":1,"destination":"waterloo"}]}'
 
 # Start automatic mode
 curl -s -X POST http://127.0.0.1:8080/automatic

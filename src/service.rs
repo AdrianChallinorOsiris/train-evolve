@@ -21,7 +21,7 @@ use crate::automation::AutomationError;
 use crate::evolve_session::{run_evolution, EvolutionConfig, EvolutionError};
 use crate::pi_client::{PiClient, PointDirection, TrackDirection};
 use crate::route_planner;
-use crate::state::{self, EvolutionStats, InitialiseRequest, StateError};
+use crate::state::{self, EvolutionStats, InitialiseRequest, RouteRequest, StateError};
 
 /// Sender used by the evolve handler to tell the server loop to shut down for a restart.
 pub type ShutdownSender = tokio::sync::watch::Sender<bool>;
@@ -304,10 +304,8 @@ pub fn program_json(payload: serde_json::Value) -> Result<serde_json::Value, Sta
 /// Same as `POST /route`: plan routes from current positions to target positions.
 ///
 /// Loads current train state from `data/runtime/trains.json` (set by `/initialise`),
-/// then plans routes for each train in `target` to reach its specified sensor + direction.
-pub fn route_json(
-    target: InitialiseRequest,
-) -> Result<serde_json::Value, route_planner::PlanError> {
+/// then plans routes for each train in `target` to reach its specified destination + direction.
+pub fn route_json(target: RouteRequest) -> Result<serde_json::Value, route_planner::PlanError> {
     target
         .validate()
         .map_err(|e| route_planner::PlanError::Layout(e.to_string()))?;
@@ -325,9 +323,7 @@ pub fn route_json(
 ///
 /// Identical to `route_json` but returns `"status": "simulated"` so the caller
 /// can review tracks, points, and step sequence before committing.
-pub fn simulate_json(
-    target: InitialiseRequest,
-) -> Result<serde_json::Value, route_planner::PlanError> {
+pub fn simulate_json(target: RouteRequest) -> Result<serde_json::Value, route_planner::PlanError> {
     target
         .validate()
         .map_err(|e| route_planner::PlanError::Layout(e.to_string()))?;
@@ -351,7 +347,7 @@ impl AppState {
     /// the step-by-step plan. For AwaitSensor steps, polls the Pi sensors.
     pub async fn execute_routes_json(
         &self,
-        target: InitialiseRequest,
+        target: RouteRequest,
     ) -> Result<serde_json::Value, String> {
         target.validate().map_err(|e| e.to_string())?;
         let current = state::InitialiseRequest::load(&state::trains_path())
@@ -382,8 +378,23 @@ impl AppState {
             }));
         }
 
-        // Update the saved train state to the target positions.
-        if let Err(e) = target.save(&state::trains_path()) {
+        // Update the saved train state to reflect the new positions.
+        let new_positions = InitialiseRequest {
+            trains: plan
+                .trains
+                .iter()
+                .map(|tp| crate::state::TrainPosition {
+                    train: tp.train,
+                    sensor: tp.to_sensor,
+                    direction: tp
+                        .target_direction
+                        .parse::<crate::state::TrainDirection>()
+                        .unwrap_or_default(),
+                    destination: None,
+                })
+                .collect(),
+        };
+        if let Err(e) = new_positions.save(&state::trains_path()) {
             return Err(format!(
                 "routes executed but failed to save new positions: {e}"
             ));
@@ -524,26 +535,28 @@ async fn program_handler(
         .map(Json)
 }
 
+fn plan_error_to_status(e: &route_planner::PlanError) -> StatusCode {
+    match e {
+        route_planner::PlanError::NoDestination { .. } => StatusCode::BAD_REQUEST,
+        route_planner::PlanError::NoRoute { .. } => StatusCode::NOT_FOUND,
+        route_planner::PlanError::TrainNotFound { .. } => StatusCode::BAD_REQUEST,
+        route_planner::PlanError::UnknownStation { .. } => StatusCode::BAD_REQUEST,
+        route_planner::PlanError::NoCurrentState => StatusCode::BAD_REQUEST,
+        route_planner::PlanError::Layout(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 async fn route_handler(
-    Json(body): Json<InitialiseRequest>,
+    Json(body): Json<RouteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     route_json(body)
-        .map_err(|e| {
-            let code = match &e {
-                route_planner::PlanError::NoDestination { .. } => StatusCode::BAD_REQUEST,
-                route_planner::PlanError::NoRoute { .. } => StatusCode::NOT_FOUND,
-                route_planner::PlanError::TrainNotFound { .. } => StatusCode::BAD_REQUEST,
-                route_planner::PlanError::NoCurrentState => StatusCode::BAD_REQUEST,
-                route_planner::PlanError::Layout(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (code, e.to_string())
-        })
+        .map_err(|e| (plan_error_to_status(&e), e.to_string()))
         .map(Json)
 }
 
 async fn route_execute_handler(
     State(state): State<AppState>,
-    Json(body): Json<InitialiseRequest>,
+    Json(body): Json<RouteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     state
         .execute_routes_json(body)
@@ -553,19 +566,10 @@ async fn route_execute_handler(
 }
 
 async fn simulate_handler(
-    Json(body): Json<InitialiseRequest>,
+    Json(body): Json<RouteRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     simulate_json(body)
-        .map_err(|e| {
-            let code = match &e {
-                route_planner::PlanError::NoDestination { .. } => StatusCode::BAD_REQUEST,
-                route_planner::PlanError::NoRoute { .. } => StatusCode::NOT_FOUND,
-                route_planner::PlanError::TrainNotFound { .. } => StatusCode::BAD_REQUEST,
-                route_planner::PlanError::NoCurrentState => StatusCode::BAD_REQUEST,
-                route_planner::PlanError::Layout(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            };
-            (code, e.to_string())
-        })
+        .map_err(|e| (plan_error_to_status(&e), e.to_string()))
         .map(Json)
 }
 
@@ -775,15 +779,15 @@ mod tests {
         layout.validate().unwrap();
         let graph = crate::layout::graph::TrackGraph::from_layout(&layout);
 
-        let target = InitialiseRequest {
-            trains: vec![crate::state::TrainPosition {
+        let target = crate::state::RouteRequest {
+            trains: vec![crate::state::RouteTrainRequest {
                 train: 1,
-                sensor: 2,
+                destination: crate::state::Destination::Sensor(2),
                 direction: crate::state::TrainDirection::Fwd,
-                destination: None,
             }],
         };
-        let plan = route_planner::plan_target_routes_with(&current, &target, &graph).unwrap();
+        let plan =
+            route_planner::plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
         assert!(!plan.trains.is_empty());
         assert_eq!(plan.trains[0].train, 1);
         assert_eq!(plan.trains[0].from_sensor, 1);

@@ -92,6 +92,8 @@ pub enum PlanError {
     },
     #[error("train {train_id} not found in current positions — run /initialise first")]
     TrainNotFound { train_id: u8 },
+    #[error("unknown station \"{name}\" for train {train_id}")]
+    UnknownStation { train_id: u8, name: String },
     #[error("no current train state — POST /initialise before /route")]
     NoCurrentState,
     #[error("layout load/validate error: {0}")]
@@ -273,8 +275,8 @@ fn load_and_validate_layout() -> Result<TrackLayout, PlanError> {
 // ---------------------------------------------------------------------------
 
 use crate::layout::graph::TraverseDirection;
-use crate::state::{InitialiseRequest, TrainDirection};
-use std::collections::{BTreeMap, BTreeSet};
+use crate::state::{Destination, InitialiseRequest, RouteRequest, TrainDirection};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// One step in a route execution plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,32 +370,42 @@ pub struct RoutePlan {
 /// Plan routes from current positions to targets.
 ///
 /// `current` — the current state (from `/initialise`, saved in `data/runtime/trains.json`).
-/// `target` — the desired end state (same format).
+/// `target` — the desired end state: each train has a destination (sensor or station) and direction.
 ///
 /// Each train in `target` must have a matching `train` id in `current`.
 pub fn plan_target_routes(
     current: &InitialiseRequest,
-    target: &InitialiseRequest,
+    target: &RouteRequest,
 ) -> Result<RoutePlan, PlanError> {
     let layout = load_and_validate_layout()?;
     let graph = TrackGraph::from_layout(&layout);
-    plan_target_routes_with(current, target, &graph)
+    plan_target_routes_with(current, target, &layout, &graph)
 }
 
-/// Plan target routes using a pre-built graph (testable without I/O).
+/// Plan target routes using a pre-built layout and graph (testable without I/O).
 pub fn plan_target_routes_with(
     current: &InitialiseRequest,
-    target: &InitialiseRequest,
+    target: &RouteRequest,
+    layout: &TrackLayout,
     graph: &TrackGraph,
 ) -> Result<RoutePlan, PlanError> {
-    // Build current position lookup: train_id → (sensor, direction)
+    // Build current position lookup: train_id → TrainPosition
     let current_map: BTreeMap<u8, &crate::state::TrainPosition> =
         current.trains.iter().map(|t| (t.train, t)).collect();
+
+    // Build station name → sensor list lookup.
+    let station_map: HashMap<String, Vec<u8>> = layout
+        .stations
+        .iter()
+        .map(|s| (s.name.to_lowercase(), s.sensor_ids.clone()))
+        .collect();
 
     let mut train_plans = Vec::new();
     let mut warnings = Vec::new();
     // Track segments reserved by trains that have already been planned.
     let mut reserved_segments: BTreeSet<u8> = BTreeSet::new();
+    // Sensors occupied by trains that have already been assigned destinations.
+    let mut occupied_sensors: BTreeSet<u8> = current.trains.iter().map(|t| t.sensor).collect();
 
     for target_train in &target.trains {
         let cur = current_map
@@ -402,10 +414,22 @@ pub fn plan_target_routes_with(
                 train_id: target_train.train,
             })?;
 
+        // Resolve destination to a concrete sensor id.
+        let to_sensor = resolve_destination(
+            target_train.train,
+            cur.sensor,
+            &target_train.destination,
+            target_train.direction,
+            &station_map,
+            &occupied_sensors,
+            &reserved_segments,
+            graph,
+        )?;
+
         let plan = plan_single_train(
             target_train.train,
             cur.sensor,
-            target_train.sensor,
+            to_sensor,
             target_train.direction,
             &reserved_segments,
             graph,
@@ -426,6 +450,11 @@ pub fn plan_target_routes_with(
         for &tid in &plan.track_ids {
             reserved_segments.insert(tid);
         }
+        // Mark destination sensor as occupied, free the old one.
+        occupied_sensors.insert(to_sensor);
+        if to_sensor != cur.sensor {
+            occupied_sensors.remove(&cur.sensor);
+        }
 
         train_plans.push(plan);
     }
@@ -434,6 +463,86 @@ pub fn plan_target_routes_with(
         trains: train_plans,
         warnings,
     })
+}
+
+/// Resolve a destination (sensor number or station name) to a concrete sensor id.
+///
+/// When the destination is a station name:
+/// 1. Look up the station's sensor list
+/// 2. Try each sensor that's not occupied and is reachable, preferring shorter routes
+/// 3. Among reachable sensors, prefer ones whose arrival direction matches the target
+#[allow(clippy::too_many_arguments)]
+fn resolve_destination(
+    train_id: u8,
+    from_sensor: u8,
+    destination: &Destination,
+    target_direction: TrainDirection,
+    station_map: &HashMap<String, Vec<u8>>,
+    occupied: &BTreeSet<u8>,
+    reserved: &BTreeSet<u8>,
+    graph: &TrackGraph,
+) -> Result<u8, PlanError> {
+    match destination {
+        Destination::Sensor(s) => Ok(*s),
+        Destination::Station(name) => {
+            let key = name.to_lowercase();
+            let sensors = station_map
+                .get(&key)
+                .ok_or_else(|| PlanError::UnknownStation {
+                    train_id,
+                    name: name.clone(),
+                })?;
+
+            // Already at one of the station's sensors?
+            if sensors.contains(&from_sensor) {
+                return Ok(from_sensor);
+            }
+
+            // Score each candidate: (direction_match, hop_count, sensor_id).
+            let mut candidates: Vec<(bool, usize, u8)> = Vec::new();
+            for &ss in sensors {
+                if occupied.contains(&ss) {
+                    continue;
+                }
+                if let Some(route) = graph.find_route(from_sensor, ss) {
+                    // Check route doesn't conflict with reserved segments.
+                    let segments: BTreeSet<u8> = route.hops.iter().map(|h| h.track_id).collect();
+                    if !segments.is_disjoint(reserved) {
+                        continue;
+                    }
+                    let arrives_fwd = route
+                        .hops
+                        .last()
+                        .map(|h| h.traverse_direction == TraverseDirection::Fwd)
+                        .unwrap_or(true);
+                    let target_fwd = target_direction == TrainDirection::Fwd;
+                    let dir_match = arrives_fwd == target_fwd;
+                    candidates.push((dir_match, route.hops.len(), ss));
+                }
+            }
+
+            // Sort: prefer direction match, then shortest route.
+            candidates.sort_by_key(|(dir_match, hops, _)| (!dir_match, *hops));
+
+            if let Some((_, _, sensor)) = candidates.first() {
+                return Ok(*sensor);
+            }
+
+            // All occupied or unreachable — try occupied sensors as a fallback
+            // (train will get a "no route" if truly blocked).
+            for &ss in sensors {
+                if graph.find_route(from_sensor, ss).is_some() {
+                    return Ok(ss);
+                }
+            }
+
+            Err(PlanError::NoRoute {
+                train_index: 0,
+                from: from_sensor,
+                to: *sensors.first().unwrap_or(&0),
+            })
+        }
+    }
 }
 
 /// Plan a single train's route from current sensor to target sensor.
@@ -859,6 +968,14 @@ mod tests {
     // Target-based route planner tests
     // -----------------------------------------------------------------------
 
+    fn test_layout_and_graph() -> (TrackLayout, TrackGraph) {
+        let path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
+        let layout = TrackLayout::from_path(&path).expect("load");
+        layout.validate().expect("validate");
+        let graph = TrackGraph::from_layout(&layout);
+        (layout, graph)
+    }
+
     fn make_train(train: u8, sensor: u8) -> crate::state::TrainPosition {
         crate::state::TrainPosition {
             train,
@@ -868,29 +985,52 @@ mod tests {
         }
     }
 
-    fn make_train_dir(
+    fn make_route_train(
+        train: u8,
+        destination: crate::state::Destination,
+        direction: TrainDirection,
+    ) -> crate::state::RouteTrainRequest {
+        crate::state::RouteTrainRequest {
+            train,
+            destination,
+            direction,
+        }
+    }
+
+    fn route_sensor(train: u8, sensor: u8) -> crate::state::RouteTrainRequest {
+        make_route_train(
+            train,
+            crate::state::Destination::Sensor(sensor),
+            TrainDirection::Fwd,
+        )
+    }
+
+    fn route_sensor_dir(
         train: u8,
         sensor: u8,
         direction: TrainDirection,
-    ) -> crate::state::TrainPosition {
-        crate::state::TrainPosition {
+    ) -> crate::state::RouteTrainRequest {
+        make_route_train(train, crate::state::Destination::Sensor(sensor), direction)
+    }
+
+    fn route_station(train: u8, name: &str) -> crate::state::RouteTrainRequest {
+        make_route_train(
             train,
-            sensor,
-            direction,
-            destination: None,
-        }
+            crate::state::Destination::Station(name.to_string()),
+            TrainDirection::Fwd,
+        )
     }
 
     #[test]
     fn target_route_already_there() {
-        let graph = test_graph();
+        let (layout, graph) = test_layout_and_graph();
         let current = InitialiseRequest {
             trains: vec![make_train(1, 5)],
         };
-        let target = InitialiseRequest {
-            trains: vec![make_train(1, 5)],
+        let target = RouteRequest {
+            trains: vec![route_sensor(1, 5)],
         };
-        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
         assert_eq!(plan.trains.len(), 1);
         assert!(plan.trains[0].already_there);
         assert!(plan.trains[0].steps.is_empty());
@@ -898,14 +1038,14 @@ mod tests {
 
     #[test]
     fn target_route_adjacent_sensor() {
-        let graph = test_graph();
+        let (layout, graph) = test_layout_and_graph();
         let current = InitialiseRequest {
             trains: vec![make_train(1, 1)],
         };
-        let target = InitialiseRequest {
-            trains: vec![make_train(1, 2)],
+        let target = RouteRequest {
+            trains: vec![route_sensor(1, 2)],
         };
-        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
         assert_eq!(plan.trains.len(), 1);
         assert!(!plan.trains[0].already_there);
         assert_eq!(plan.trains[0].from_sensor, 1);
@@ -931,27 +1071,27 @@ mod tests {
 
     #[test]
     fn target_route_train_not_found() {
-        let graph = test_graph();
+        let (layout, graph) = test_layout_and_graph();
         let current = InitialiseRequest {
             trains: vec![make_train(1, 1)],
         };
-        let target = InitialiseRequest {
-            trains: vec![make_train(99, 2)],
+        let target = RouteRequest {
+            trains: vec![route_sensor(99, 2)],
         };
-        let err = plan_target_routes_with(&current, &target, &graph).unwrap_err();
+        let err = plan_target_routes_with(&current, &target, &layout, &graph).unwrap_err();
         assert!(err.to_string().contains("train 99"));
     }
 
     #[test]
     fn target_route_cross_track() {
-        let graph = test_graph();
+        let (layout, graph) = test_layout_and_graph();
         let current = InitialiseRequest {
             trains: vec![make_train(1, 3)],
         };
-        let target = InitialiseRequest {
-            trains: vec![make_train(1, 4)],
+        let target = RouteRequest {
+            trains: vec![route_sensor(1, 4)],
         };
-        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
         assert!(!plan.trains[0].already_there);
         // Route should exist and have at least one track.
         assert!(
@@ -970,14 +1110,14 @@ mod tests {
 
     #[test]
     fn target_route_two_trains_reserves_tracks() {
-        let graph = test_graph();
+        let (layout, graph) = test_layout_and_graph();
         let current = InitialiseRequest {
             trains: vec![make_train(1, 1), make_train(2, 10)],
         };
-        let target = InitialiseRequest {
-            trains: vec![make_train(1, 3), make_train(2, 12)],
+        let target = RouteRequest {
+            trains: vec![route_sensor(1, 3), route_sensor(2, 12)],
         };
-        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
         assert_eq!(plan.trains.len(), 2);
         assert_eq!(plan.trains[0].train, 1);
         assert_eq!(plan.trains[1].train, 2);
@@ -985,20 +1125,58 @@ mod tests {
 
     #[test]
     fn target_route_direction_warning() {
-        let graph = test_graph();
+        let (layout, graph) = test_layout_and_graph();
         // Train at sensor 1, target sensor 2 with direction bwd.
         // Route 1→2 is forward on track 1, so arrival is fwd — but target wants bwd.
         let current = InitialiseRequest {
             trains: vec![make_train(1, 1)],
         };
-        let target = InitialiseRequest {
-            trains: vec![make_train_dir(1, 2, TrainDirection::Bwd)],
+        let target = RouteRequest {
+            trains: vec![route_sensor_dir(1, 2, TrainDirection::Bwd)],
         };
-        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
         assert!(
             plan.trains[0].description.contains("WARNING"),
             "should warn about direction mismatch: {}",
             plan.trains[0].description
+        );
+    }
+
+    #[test]
+    fn target_route_by_station_name() {
+        let (layout, graph) = test_layout_and_graph();
+        // Train at sensor 1, route to station "waterloo" which has sensors [2, 7, 12, 17].
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 1)],
+        };
+        let target = RouteRequest {
+            trains: vec![route_station(1, "waterloo")],
+        };
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
+        assert_eq!(plan.trains.len(), 1);
+        assert!(!plan.trains[0].already_there);
+        let waterloo_sensors = [2u8, 7, 12, 17];
+        assert!(
+            waterloo_sensors.contains(&plan.trains[0].to_sensor),
+            "should route to a waterloo station sensor, got {}",
+            plan.trains[0].to_sensor
+        );
+    }
+
+    #[test]
+    fn target_route_unknown_station() {
+        let (layout, graph) = test_layout_and_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 1)],
+        };
+        let target = RouteRequest {
+            trains: vec![route_station(1, "nonexistent")],
+        };
+        let err = plan_target_routes_with(&current, &target, &layout, &graph).unwrap_err();
+        assert!(
+            err.to_string().contains("nonexistent"),
+            "should mention station name: {}",
+            err
         );
     }
 
@@ -1035,14 +1213,14 @@ mod tests {
 
     #[test]
     fn target_route_serializes_to_json() {
-        let graph = test_graph();
+        let (layout, graph) = test_layout_and_graph();
         let current = InitialiseRequest {
             trains: vec![make_train(1, 1)],
         };
-        let target = InitialiseRequest {
-            trains: vec![make_train(1, 2)],
+        let target = RouteRequest {
+            trains: vec![route_sensor(1, 2)],
         };
-        let plan = plan_target_routes_with(&current, &target, &graph).unwrap();
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
         let json = serde_json::to_value(&plan).unwrap();
         assert!(json["trains"].is_array());
         assert_eq!(json["trains"][0]["train"], 1);

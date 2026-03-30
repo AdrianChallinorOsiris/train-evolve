@@ -1,3 +1,46 @@
+## Session 10 — Route & Simulate with station destinations
+
+### What changed
+
+This session was a series of operator-guided improvements to the `/initialise`, `/route`, and `/simulate` commands:
+
+1. **Train identifier in `/initialise`** — each train now has a `train` field (u8 identifier) so the system can track individual trains.
+
+2. **Optional `direction` field** — each train position accepts `"fwd"` or `"bwd"` (defaults to `"fwd"`) so we know which way the train is facing.
+
+3. **`/simulate` command** — new dry-run endpoint that plans a route and shows tracks, points, and steps without sending any commands to the Pi hardware. Essential for reviewing plans before executing.
+
+4. **Station-aware routing** — the `/route` and `/simulate` commands now accept a **`destination`** field that can be either a sensor number (1–24) or a station name (`"waterloo"`, `"bridge"`, `"sidings"`, `"blackheath"`, `"industrial"`). When a station name is given, the planner picks the best available sensor at that station, considering occupancy and route conflicts.
+
+5. **`RouteRequest` type** — separate from `InitialiseRequest`. Route/simulate requests use `destination` (sensor or station) rather than `sensor`.
+
+6. **Full API documentation** — created `docs/API.md` with complete endpoint reference, JSON formats, validation rules, station list, and curl examples.
+
+### JSON formats
+
+**Initialise** (current positions):
+```json
+{"trains": [{"train":1, "sensor":21}, {"train":2, "sensor":22, "direction":"bwd"}]}
+```
+
+**Route/Simulate** (target destinations):
+```json
+{"trains": [{"train":1, "destination":"waterloo", "direction":"fwd"}, {"train":2, "destination":23, "direction":"bwd"}]}
+```
+
+### Learnings
+
+- **Station names vs sensor numbers** — the flexible `Destination` enum with a custom deserializer that accepts both integers and strings was the right approach. It makes the API natural for both precise (sensor 23) and high-level (station "waterloo") targeting.
+- **Test data must match real layout** — a test for routing to station "main" failed because that station doesn't exist in our layout. The actual stations are: sidings, blackheath, waterloo, bridge, industrial. Always check `data/track_layout.toml` for real names.
+- **Simulate before execute** — having `/simulate` as a separate dry-run is invaluable. The route planner is complex (multi-hop pathfinding, point setting, direction calculation, occupancy avoidance) and mistakes could jam the physical layout.
+- **The industrial station constraint** — industrial (sensor 23) only has one valid exit: move backward from track 12 to track 2. This means trains routed there need careful direction planning.
+- **Max 130 tests** — test suite has grown to 130 tests (108 lib + 22 binary), all passing with clean clippy and fmt.
+
+### Stats
+- Tests: 130 (108 lib + 22 binary)
+- Clippy: clean
+- Fmt: clean
+
 ## Session 9 — Evolution transcript
 
 
