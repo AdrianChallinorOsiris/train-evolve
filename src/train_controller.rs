@@ -506,6 +506,24 @@ pub async fn run_automatic(
             break;
         }
 
+        // Poll sensors once per tick (shared across all trains).
+        // Only needed when at least one train is en route.
+        let has_en_route = controller
+            .trains
+            .iter()
+            .any(|t| matches!(t.phase, TrainPhase::EnRoute { .. }));
+        let sensor_snapshot = if has_en_route {
+            match pi.sensors().await {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    eprintln!("yoyo: sensor poll error: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         // Process each train
         for i in 0..controller.trains.len() {
             if cancel.load(Ordering::SeqCst) {
@@ -551,22 +569,19 @@ pub async fn run_automatic(
                     }
                 }
                 TrainPhase::EnRoute { destination, route } => {
-                    // Poll sensors to see if train has arrived
-                    match poll_sensor(&pi, destination).await {
-                        Ok(true) => {
-                            eprintln!("yoyo: train {} arrived at S{}", i, destination);
-                            // Stop the tracks used by this route
-                            if let Err(e) = TrainController::stop_train_tracks(&pi, &route).await {
-                                eprintln!("yoyo: train {} stop tracks error: {e}", i);
-                            }
-                            controller.arrive(i, destination);
+                    // Check the pre-fetched sensor snapshot for arrival
+                    let arrived = sensor_snapshot
+                        .as_ref()
+                        .and_then(|snap| snap.get(&destination.to_string()))
+                        .map(|s| s.value)
+                        .unwrap_or(false);
+                    if arrived {
+                        eprintln!("yoyo: train {} arrived at S{}", i, destination);
+                        // Stop the tracks used by this route
+                        if let Err(e) = TrainController::stop_train_tracks(&pi, &route).await {
+                            eprintln!("yoyo: train {} stop tracks error: {e}", i);
                         }
-                        Ok(false) => {
-                            // Still moving — nothing to do
-                        }
-                        Err(e) => {
-                            eprintln!("yoyo: sensor poll error for train {}: {e}", i);
-                        }
+                        controller.arrive(i, destination);
                     }
                 }
                 TrainPhase::Dwelling {
@@ -618,16 +633,7 @@ pub async fn run_automatic(
     Ok(())
 }
 
-/// Poll a specific sensor to check if a train has arrived.
-async fn poll_sensor(pi: &PiClient, sensor_id: u8) -> Result<bool, PiError> {
-    let sensors = pi.sensors().await?;
-    let key = sensor_id.to_string();
-    if let Some(state) = sensors.get(&key) {
-        Ok(state.value)
-    } else {
-        Ok(false)
-    }
-}
+
 
 #[cfg(test)]
 mod tests {

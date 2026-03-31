@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Run the same checks as .github/workflows/ci.yml; on success bump patch version, then git add -A, commit, push.
+# Usage: ./scripts/commit "Your commit message"
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+if [ "$#" -ne 1 ]; then
+  echo "Usage: $0 MESSAGE" >&2
+  exit 1
+fi
+
+MESSAGE="$1"
+CARGO_TOML="${ROOT}/Cargo.toml"
+
+if [ ! -f "$CARGO_TOML" ]; then
+  echo "error: Cargo.toml not found at ${CARGO_TOML}" >&2
+  exit 1
+fi
+
+ci_die() {
+  echo "error: $1 failed. Fix before committing." >&2
+  echo "error: no version bump and no git commands were run." >&2
+  exit 1
+}
+
+echo "Running CI checks (same as .github/workflows/ci.yml)..."
+
+echo "==> cargo build"
+if ! cargo build; then ci_die "cargo build"; fi
+
+echo "==> cargo test"
+if ! cargo test; then ci_die "cargo test"; fi
+
+echo "==> cargo clippy --all-targets -- -D warnings"
+if ! cargo clippy --all-targets -- -D warnings; then ci_die "cargo clippy"; fi
+
+echo "==> cargo fmt -- --check"
+if ! cargo fmt -- --check; then ci_die "cargo fmt --check"; fi
+
+# First line that looks like [package] version (starts the line, after optional indent).
+`current=$(
+  awk '
+    /^[[:space:]]*version[[:space:]]*=/ {
+      match($0, /"[^"]*"/)
+      if (RSTART > 0) print substr($0, RSTART + 1, RLENGTH - 2)
+      exit
+    }
+  ' "$CARGO_TOML"`
+)
+current=$(echo "$current" | tr -d '[:space:]')
+
+if [ -z "$current" ]; then
+  echo "error: could not read [package] version from Cargo.toml" >&2
+  exit 1
+fi
+
+# BSD awk joins fields with spaces if OFS is set only after $NF changes; set OFS in BEGIN.
+new_version=$(echo "$current" | awk -F. 'BEGIN { OFS = "." } { $NF++; print }')
+
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+
+# Replace only the first [package] version line; tolerate arbitrary spaces around '=' and quotes.
+awk -v nv="$new_version" '
+  /^[[:space:]]*version[[:space:]]*=/ && !done {
+    print "version = \"" nv "\""
+    done = 1
+    next
+  }
+  { print }
+' "$CARGO_TOML" >"$tmp"
+mv "$tmp" "$CARGO_TOML"
+trap - EXIT
+
+echo "Bump version: ${current} -> ${new_version}"
+
+git add -A
+git commit -m "$MESSAGE"
+git push
