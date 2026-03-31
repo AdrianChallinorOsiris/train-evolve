@@ -633,8 +633,6 @@ pub async fn run_automatic(
     Ok(())
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;

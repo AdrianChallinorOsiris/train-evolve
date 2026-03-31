@@ -441,8 +441,8 @@ async fn execute_route_step(
         }
         RouteStep::AwaitSensor { sensor, .. } => {
             // Poll sensors until the target fires or timeout elapses.
-            let deadline =
-                tokio::time::Instant::now() + std::time::Duration::from_secs(AWAIT_SENSOR_TIMEOUT_SECS);
+            let deadline = tokio::time::Instant::now()
+                + std::time::Duration::from_secs(AWAIT_SENSOR_TIMEOUT_SECS);
             let key = sensor.to_string();
             loop {
                 if tokio::time::Instant::now() >= deadline {

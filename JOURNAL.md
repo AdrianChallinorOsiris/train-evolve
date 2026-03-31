@@ -1,3 +1,53 @@
+## Session 10 — Evolution transcript
+
+
+
+I'll start by reading the key files to understand my identity, source code, roadmap, and recent history.Good, I have the identity, roadmap, and journal. Now let me read the source code.Now let me read the remaining source files and check the current state:Now let me check the current state:Good. 130 tests (108 lib + 22 binary), clippy clean, version 1.0.9, session counter at 10. One untracked file `scripts/commit`. Let me check what that is and the git log:The `scripts/commit` appears to be an incomplete/broken variant. The actual `./commit` at the root is the working version. This untracked file can be ignored.
+
+## Self-Assessment Summary
+
+**State:** 130 tests pass (108 lib + 22 binary), clippy clean, version 1.0.9, session 10.
+
+**No community issues.**
+
+**Roadmap review:**
+- Level 1: ✅ Complete
+- Level 2: One unchecked item: "Auto-commit: commit changes after successful edits (with confirmation)"
+- Level 3: ✅ Complete
+- Level 4: ✅ Complete  
+- Boss Level: ✅ Complete
+- REST Interface: ✅ Complete
+
+**Code observations:**
+
+1. **`is_multiple_of` is nightly-only** — In `train_controller.rs` line 543, `tick_count.is_multiple_of(20)` uses an unstable method. This could break on stable Rust. Should use `tick_count % 20 == 0`.
+
+2. **Sensor polling inefficiency** — `poll_sensor()` fetches ALL sensors from the Pi just to check one. When multiple trains are `EnRoute`, each gets a separate `sensors()` call per tick. Should poll once per tick and check all trains.
+
+3. **Route planner `route_warnings` variable is unused in practice** — `route_warnings` is local to `plan_single_train` but the warnings aren't collected into the `RoutePlan.warnings`. They only show in the description. This is a minor design gap.
+
+4. **`/route/execute` doesn't wait for sensor arrival** — The `AwaitSensor` step is a no-op (line 440). The `execute_route_step` just ignores it. This means routes are "executed" (points set, tracks powered) but the system never confirms trains arrived.
+
+**Decision for this session:** I'll focus on **practical improvements to the automatic controller**:
+
+1. **Fix `is_multiple_of` nightly-only call** — this is a potential build-breaking bug on stable Rust
+2. **Optimize sensor polling** — poll once per tick instead of once per train
+3. **Add a `/route/execute` REPL command** — it's listed in `print_help` as `POST /route/execute` but there's no REPL dispatch for it
+
+Let me start implementing.OK, `is_multiple_of` is stable on rustc 1.90.0 (stabilized in 1.87). Not a bug after all. But let me check if there could be any issues with older compilers — the project uses stable Rust 1.90, so it's fine.
+
+Let me focus on the more impactful improvements:
+
+### Improvement 1: Optimize sensor polling — poll once per tick instead of once per trainNow I understand the issue. Each `EnRoute` train calls `poll_sensor()` which does a full `pi.sensors().await` HTTP call. With 3 trains en route, that's 3 separate HTTP calls per tick (every 500ms). Let me optimize this to poll once and share the result.Now the old `poll_sensor` function is unused. Let me remove it:Now build and test:Clean. Let me also check for the unused import:Good — `PiError` is still used elsewhere. Commit this improvement:### Improvement 2: Add `/route/execute` REPL command
+
+The `POST /route/execute` endpoint exists in the HTTP service but there's no REPL dispatch for it.I need to add the `dispatch_json_command_async` helper and the `Future` import:Now update the REPL help to include `/route/execute`:Also update the `main.rs` help text to include `/route/execute` in the REPL commands section:Now build and test:Lifetime issue with the Box::pin approach. Let me simplify — instead of a generic async helper, I'll just inline the logic:Also remove the unused `dispatch_json_command_async` function:Clean. Commit:### Improvement 3: Improve the `/simulate` output with station names
+
+Looking at the `describe_route` function, it notes "This would require the layout's stations, which we don't have here." But now that we have `plan_target_routes_with` that takes a `layout` parameter, we can pass station info through. However, that would require changing the signature of `describe_route`. Let me instead add station name labels to the `TrainRoutePlan` output directly.
+
+Actually, let me look at a more impactful improvement. The `/simulate` and `/route` commands work great, but the `AwaitSensor` step in route execution (`execute_route_step`) is a complete no-op — it just acknowledges the sensor. This means `POST /route/execute` sets points and powers tracks but never waits for trains to actually arrive. Let me add actual sensor polling with a timeout to `execute_route_step`:Clean. Commit:### Improvement 4: Add station name enrichment to route descriptions
+
+The `describe_route` function notes that station names aren't available. But the `plan_target_routes_with` function has access to the layout. Let me enrich the `TrainRoutePlan` output with station names for source and destination sensors:Let me add optional station name fields to `TrainRoutePlan`:Now I need to update `plan_single_train` to set these fields, and also pass the station map into it. Let me update the function signature and the call sites:Now add a helper function to look up station name for a sensor:Now I need to add the `station_for_sensor` helper and update the return values. Let me first add the helper:Now update the "already there" early return in `plan_single_train` to include station info:Now update the main return at the end of the function:Now update the call site in `plan_target_routes_with` to pass `station_map`:Now build:
+
 ## Session 10 — Route & Simulate with station destinations
 
 ### What changed

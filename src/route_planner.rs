@@ -356,6 +356,12 @@ pub struct TrainRoutePlan {
     pub steps: Vec<RouteStep>,
     /// True if the train is already at the target.
     pub already_there: bool,
+    /// Station name at the departure sensor (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_station: Option<String>,
+    /// Station name at the destination sensor (if any).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_station: Option<String>,
 }
 
 /// Full route plan for all trains.
@@ -433,6 +439,7 @@ pub fn plan_target_routes_with(
             target_train.direction,
             &reserved_segments,
             graph,
+            &station_map,
         )?;
 
         // Check for track conflicts with other planned trains.
@@ -545,6 +552,16 @@ fn resolve_destination(
     }
 }
 
+/// Find the station name for a sensor, if any.
+fn station_for_sensor(sensor: u8, station_map: &HashMap<String, Vec<u8>>) -> Option<String> {
+    for (name, sensors) in station_map {
+        if sensors.contains(&sensor) {
+            return Some(name.clone());
+        }
+    }
+    None
+}
+
 /// Plan a single train's route from current sensor to target sensor.
 fn plan_single_train(
     train_id: u8,
@@ -553,7 +570,11 @@ fn plan_single_train(
     target_direction: TrainDirection,
     reserved: &BTreeSet<u8>,
     graph: &TrackGraph,
+    station_map: &HashMap<String, Vec<u8>>,
 ) -> Result<TrainRoutePlan, PlanError> {
+    // Look up station names for source and destination
+    let from_station = station_for_sensor(from_sensor, station_map);
+    let to_station = station_for_sensor(to_sensor, station_map);
     // Already there?
     if from_sensor == to_sensor {
         return Ok(TrainRoutePlan {
@@ -569,6 +590,8 @@ fn plan_single_train(
             ),
             steps: vec![],
             already_there: true,
+            from_station: from_station.clone(),
+            to_station: to_station.clone(),
         });
     }
 
@@ -705,6 +728,8 @@ fn plan_single_train(
         description: full_description,
         steps,
         already_there: false,
+        from_station,
+        to_station,
     })
 }
 

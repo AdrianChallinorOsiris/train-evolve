@@ -1,6 +1,6 @@
 [package]
 name = "yoyo"
-version = "1.0.9"
+version = "1.0.10"
 edition = "2021"
 description = "A coding agent that evolves itself. Born as 600 lines of Rust, growing up in public."
 license = "MIT"
