@@ -408,6 +408,12 @@ impl AppState {
     }
 }
 
+/// Maximum time to wait for a sensor to fire during route execution (seconds).
+const AWAIT_SENSOR_TIMEOUT_SECS: u64 = 60;
+
+/// Interval between sensor polls during route execution (milliseconds).
+const AWAIT_SENSOR_POLL_MS: u64 = 500;
+
 /// Execute a single route step against the Pi hardware.
 async fn execute_route_step(
     pi: &PiClient,
@@ -434,10 +440,30 @@ async fn execute_route_step(
             pi.stop_track(*track_id).await?;
         }
         RouteStep::AwaitSensor { sensor, .. } => {
-            // Poll until the sensor fires. In a real implementation this would
-            // poll pi.sensors() in a loop with a timeout. For now, we log the
-            // intent — the caller can monitor /pi/sensors.
-            let _ = sensor; // acknowledged; actual polling is future work
+            // Poll sensors until the target fires or timeout elapses.
+            let deadline =
+                tokio::time::Instant::now() + std::time::Duration::from_secs(AWAIT_SENSOR_TIMEOUT_SECS);
+            let key = sensor.to_string();
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    eprintln!(
+                        "yoyo: await sensor {} timed out after {}s",
+                        sensor, AWAIT_SENSOR_TIMEOUT_SECS
+                    );
+                    break;
+                }
+                match pi.sensors().await {
+                    Ok(snap) => {
+                        if snap.get(&key).map(|s| s.value).unwrap_or(false) {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("yoyo: sensor poll error during route execute: {e}");
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(AWAIT_SENSOR_POLL_MS)).await;
+            }
         }
     }
     Ok(())
