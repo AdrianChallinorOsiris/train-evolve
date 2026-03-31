@@ -94,6 +94,7 @@ REPL COMMANDS:
   /initialise <json>   Same as POST /initialise (JSON on one line)
   /program <json>      Same as POST /program
   /route <json>        Same as POST /route (compute routes for trains)
+  /route/execute <json> Same as POST /route/execute (plan & execute on Pi)
   /automatic           Same as POST /automatic
   /automatic/status    Same as GET /automatic/status
   /stop                Same as POST /stop

@@ -57,6 +57,7 @@ pub fn print_repl_help() {
     println!(
         "  {DIM}                        e.g. {{\"trains\":[{{\"train\":1,\"destination\":\"waterloo\",\"direction\":\"bwd\"}}]}}{RESET}"
     );
+    println!("  {GREEN}/route/execute <json>{RESET} plan routes and execute on Pi hardware");
     println!("\n{BOLD}  Pi hardware:{RESET}");
     println!("  {GREEN}/pi status{RESET}  {GREEN}/pi health{RESET}  {GREEN}/pi sensors{RESET}  {GREEN}/pi sensors reset{RESET}");
     println!("  {GREEN}/pi track speed <id> OFF|FWD|BCK <0-100>{RESET}");
@@ -306,6 +307,21 @@ pub async fn service_dispatch(line: &str, state: &AppState) -> bool {
                     Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
                 }
             });
+            true
+        }
+        s if s.starts_with("/route/execute") => {
+            let rest = s["/route/execute".len()..].trim();
+            if rest.is_empty() {
+                eprintln!("{RED}  usage: /route/execute <JSON>{RESET}");
+            } else {
+                match serde_json::from_str::<RouteRequest>(rest) {
+                    Ok(body) => match state.execute_routes_json(body).await {
+                        Ok(v) => print_json_pretty(&v),
+                        Err(e) => eprintln!("{RED}  route/execute: {e}{RESET}"),
+                    },
+                    Err(e) => eprintln!("{RED}  invalid JSON: {e}{RESET}"),
+                }
+            }
             true
         }
         s if s.starts_with("/route") => {
