@@ -1253,4 +1253,211 @@ mod tests {
         assert_eq!(json["trains"][0]["to_sensor"], 2);
         assert!(json["trains"][0]["steps"].is_array());
     }
+
+    // -----------------------------------------------------------------------
+    // Tests for real initial positions (operator-provided scenarios)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn route_train_at_sensor_21_to_waterloo() {
+        // Train 1 at sensor 21 (sidings) routes to waterloo station
+        let (layout, graph) = test_layout_and_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 21)],
+        };
+        let target = RouteRequest {
+            trains: vec![route_station(1, "waterloo")],
+        };
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
+        assert_eq!(plan.trains.len(), 1);
+        assert!(!plan.trains[0].already_there);
+        let waterloo_sensors = [2u8, 7, 12, 17];
+        assert!(
+            waterloo_sensors.contains(&plan.trains[0].to_sensor),
+            "train 1 from sensor 21 should route to a waterloo sensor, got {}",
+            plan.trains[0].to_sensor
+        );
+        assert!(!plan.trains[0].steps.is_empty(), "should have route steps");
+    }
+
+    #[test]
+    fn route_two_trains_from_sidings() {
+        // Train 1 at sensor 21, train 2 at sensor 20 (both in sidings)
+        // Route them to different stations
+        let (layout, graph) = test_layout_and_graph();
+        let current = InitialiseRequest {
+            trains: vec![make_train(1, 21), make_train(2, 20)],
+        };
+        let target = RouteRequest {
+            trains: vec![route_station(1, "waterloo"), route_station(2, "bridge")],
+        };
+        let plan = plan_target_routes_with(&current, &target, &layout, &graph).unwrap();
+        assert_eq!(plan.trains.len(), 2);
+
+        let waterloo_sensors = [2u8, 7, 12, 17];
+        let bridge_sensors = [5u8, 9, 16];
+        assert!(
+            waterloo_sensors.contains(&plan.trains[0].to_sensor),
+            "train 1 should route to waterloo, got sensor {}",
+            plan.trains[0].to_sensor
+        );
+        assert!(
+            bridge_sensors.contains(&plan.trains[1].to_sensor),
+            "train 2 should route to bridge, got sensor {}",
+            plan.trains[1].to_sensor
+        );
+    }
+
+    #[test]
+    fn sensor_22_does_not_exist_in_graph() {
+        // Sensor 22 is not in the layout — verify the graph confirms this
+        let graph = test_graph();
+        assert!(
+            graph.find_route(22, 1).is_none(),
+            "there should be no route FROM sensor 22 (it doesn't exist)"
+        );
+        assert!(
+            graph.find_route(1, 22).is_none(),
+            "there should be no route TO sensor 22 (it doesn't exist)"
+        );
+    }
+
+    #[test]
+    fn route_every_station_pair() {
+        // Verify that we can route between every pair of stations
+        let (layout, graph) = test_layout_and_graph();
+        let stations = &layout.stations;
+        for from_station in stations {
+            for to_station in stations {
+                if from_station.name == to_station.name {
+                    continue;
+                }
+                let from_sensor = from_station.sensor_ids[0];
+                let current = InitialiseRequest {
+                    trains: vec![make_train(1, from_sensor)],
+                };
+                let target = RouteRequest {
+                    trains: vec![route_station(1, &to_station.name)],
+                };
+                let result = plan_target_routes_with(&current, &target, &layout, &graph);
+                assert!(
+                    result.is_ok(),
+                    "should find route from {} (sensor {}) to {}: {:?}",
+                    from_station.name,
+                    from_sensor,
+                    to_station.name,
+                    result.err()
+                );
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Example route files (operator-provided scenarios from data/example_routes/)
+    // -----------------------------------------------------------------------
+
+    /// An example route scenario loaded from a JSON file.
+    #[derive(Debug, Deserialize)]
+    struct ExampleRoute {
+        description: String,
+        current: InitialiseRequest,
+        target: RouteRequest,
+        expect: String,
+    }
+
+    #[test]
+    fn example_route_files() {
+        let dir = format!("{}/data/example_routes", env!("CARGO_MANIFEST_DIR"));
+        let dir_path = std::path::Path::new(&dir);
+        if !dir_path.exists() {
+            return; // No example routes directory — skip
+        }
+
+        let (layout, graph) = test_layout_and_graph();
+        let valid_sensors = layout.sensor_ids();
+        let mut tested = 0;
+
+        for entry in std::fs::read_dir(dir_path).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+
+            let contents = std::fs::read_to_string(&path).unwrap();
+            let example: ExampleRoute = serde_json::from_str(&contents).unwrap_or_else(|e| {
+                panic!("failed to parse example route {}: {}", path.display(), e)
+            });
+
+            match example.expect.as_str() {
+                "ok" => {
+                    // Current state must have valid sensors
+                    let sensor_valid = example
+                        .current
+                        .validate()
+                        .and_then(|_| example.current.validate_against_layout(&valid_sensors));
+                    assert!(
+                        sensor_valid.is_ok(),
+                        "[{}] {}: current state has invalid sensors: {}",
+                        path.display(),
+                        example.description,
+                        sensor_valid.err().unwrap()
+                    );
+
+                    let result =
+                        plan_target_routes_with(&example.current, &example.target, &layout, &graph);
+                    assert!(
+                        result.is_ok(),
+                        "[{}] {}: expected OK but got error: {:?}",
+                        path.display(),
+                        example.description,
+                        result.err()
+                    );
+                    let plan = result.unwrap();
+                    for tp in &plan.trains {
+                        assert!(
+                            !tp.steps.is_empty() || tp.already_there,
+                            "[{}] {}: train {} has no steps and isn't already_there",
+                            path.display(),
+                            example.description,
+                            tp.train
+                        );
+                    }
+                }
+                "error" => {
+                    // Either the sensor validation or the route planning should fail
+                    let sensor_valid = example
+                        .current
+                        .validate()
+                        .and_then(|_| example.current.validate_against_layout(&valid_sensors));
+                    if sensor_valid.is_err() {
+                        // Expected: invalid sensor in current state
+                    } else {
+                        let result = plan_target_routes_with(
+                            &example.current,
+                            &example.target,
+                            &layout,
+                            &graph,
+                        );
+                        assert!(
+                            result.is_err(),
+                            "[{}] {}: expected error but route planning succeeded",
+                            path.display(),
+                            example.description,
+                        );
+                    }
+                }
+                other => panic!(
+                    "[{}] {}: unknown expect value '{}' — use 'ok' or 'error'",
+                    path.display(),
+                    example.description,
+                    other
+                ),
+            }
+            tested += 1;
+        }
+
+        assert!(tested > 0, "no example route JSON files found in {}", dir);
+        eprintln!("tested {} example route file(s)", tested);
+    }
 }

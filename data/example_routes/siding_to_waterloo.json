@@ -1,0 +1,14 @@
+{
+  "description": "Train at sensor 21 to waterloo",
+  "current": {
+    "trains": [
+      {"train": 1, "sensor": 21, "direction": "fwd"}
+    ]
+  },
+  "target": {
+    "trains": [
+      {"train": 1, "destination": "waterloo", "direction": "fwd"}
+    ]
+  },
+  "expect": "ok"
+}

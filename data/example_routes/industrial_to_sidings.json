@@ -1,0 +1,14 @@
+{
+  "description": "Industrial to sidings — test narrow route",
+  "current": {
+    "trains": [
+      {"train": 1, "sensor": 23, "direction": "fwd"}
+    ]
+  },
+  "target": {
+    "trains": [
+      {"train": 1, "destination": "sidings", "direction": "fwd"}
+    ]
+  },
+  "expect": "ok"
+}

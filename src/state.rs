@@ -194,6 +194,8 @@ pub enum StateError {
     TooManyTrains(usize),
     #[error("invalid sensor id {0}: must be 1..=24")]
     InvalidSensor(u8),
+    #[error("sensor {0} does not exist in the track layout (valid sensors: {1})")]
+    SensorNotInLayout(u8, String),
     #[error("invalid train id {0}: must be >= 1")]
     InvalidTrainId(u8),
     #[error("duplicate train id {0}")]
@@ -244,6 +246,33 @@ impl InitialiseRequest {
         }
         let s = fs::read_to_string(path)?;
         Ok(Some(serde_json::from_str(&s)?))
+    }
+
+    /// Validate that all sensor IDs in this request actually exist in the layout.
+    ///
+    /// Call this *after* `validate()` for a deeper check against the real track topology.
+    pub fn validate_against_layout(&self, valid_sensors: &[u8]) -> Result<(), StateError> {
+        for t in &self.trains {
+            if !valid_sensors.contains(&t.sensor) {
+                let valid_str = valid_sensors
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(StateError::SensorNotInLayout(t.sensor, valid_str));
+            }
+            if let Some(d) = t.destination {
+                if !valid_sensors.contains(&d) {
+                    let valid_str = valid_sensors
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return Err(StateError::SensorNotInLayout(d, valid_str));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -510,5 +539,59 @@ mod tests {
         assert_eq!(json["total_tokens_out"], 500);
         assert_eq!(json["last_session_at"], "2026-03-28");
         assert_eq!(json["last_version"], "1.0.7");
+    }
+
+    #[test]
+    fn validate_sensor_not_in_layout() {
+        // Sensor 22 does not exist in the layout (sensors are 1-21, 23, 24)
+        let layout_path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
+        let layout = crate::layout::TrackLayout::from_path(&layout_path).unwrap();
+        let valid_sensors = layout.sensor_ids();
+
+        // Verify sensor 22 is NOT in the valid set
+        assert!(
+            !valid_sensors.contains(&22),
+            "sensor 22 should not exist in layout"
+        );
+
+        let req = InitialiseRequest {
+            trains: vec![tp(2, 22)],
+        };
+        // Basic validation passes (22 is in 1..=24)
+        assert!(req.validate().is_ok());
+        // But layout validation fails
+        let err = req.validate_against_layout(&valid_sensors).unwrap_err();
+        assert!(
+            err.to_string().contains("sensor 22 does not exist"),
+            "expected sensor-not-in-layout error, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn validate_sensor_21_in_layout() {
+        let layout_path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
+        let layout = crate::layout::TrackLayout::from_path(&layout_path).unwrap();
+        let valid_sensors = layout.sensor_ids();
+
+        let req = InitialiseRequest {
+            trains: vec![tp(1, 21)],
+        };
+        req.validate().unwrap();
+        req.validate_against_layout(&valid_sensors).unwrap();
+    }
+
+    #[test]
+    fn layout_has_expected_sensors() {
+        let layout_path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
+        let layout = crate::layout::TrackLayout::from_path(&layout_path).unwrap();
+        let sensors = layout.sensor_ids();
+        // Layout has 23 sensors: 1-21, 23, 24 (no sensor 22)
+        assert_eq!(sensors.len(), 23, "expected 23 sensors, got {:?}", sensors);
+        assert!(sensors.contains(&1));
+        assert!(sensors.contains(&21));
+        assert!(!sensors.contains(&22), "sensor 22 should not exist");
+        assert!(sensors.contains(&23));
+        assert!(sensors.contains(&24));
     }
 }

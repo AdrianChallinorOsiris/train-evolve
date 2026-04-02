@@ -193,3 +193,17 @@ pub struct TrackLayout {
     #[serde(default)]
     pub notes: Option<String>,
 }
+
+impl TrackLayout {
+    /// Returns the sorted set of all sensor IDs defined in the layout.
+    pub fn sensor_ids(&self) -> Vec<u8> {
+        let mut ids: Vec<u8> = self
+            .tracks
+            .iter()
+            .flat_map(|t| t.sensors_in_route())
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+}

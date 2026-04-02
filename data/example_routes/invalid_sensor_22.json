@@ -1,0 +1,16 @@
+{
+  "description": "Invalid sensor 22 should be rejected",
+  "current": {
+    "trains": [
+      {"train": 1, "sensor": 21, "direction": "fwd"},
+      {"train": 2, "sensor": 22, "direction": "fwd"}
+    ]
+  },
+  "target": {
+    "trains": [
+      {"train": 1, "destination": "waterloo", "direction": "fwd"},
+      {"train": 2, "destination": "bridge", "direction": "fwd"}
+    ]
+  },
+  "expect": "error"
+}

@@ -1,0 +1,16 @@
+{
+  "description": "Two trains from sidings to different stations",
+  "current": {
+    "trains": [
+      {"train": 1, "sensor": 21, "direction": "fwd"},
+      {"train": 2, "sensor": 20, "direction": "fwd"}
+    ]
+  },
+  "target": {
+    "trains": [
+      {"train": 1, "destination": "waterloo", "direction": "fwd"},
+      {"train": 2, "destination": "bridge", "direction": "fwd"}
+    ]
+  },
+  "expect": "ok"
+}

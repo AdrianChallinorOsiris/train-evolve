@@ -285,6 +285,14 @@ impl AppState {
 /// Same as `POST /initialise` (no `AppState` required).
 pub fn initialise_json(body: InitialiseRequest) -> Result<serde_json::Value, StateError> {
     body.validate()?;
+
+    // Validate sensor IDs against the actual track layout.
+    let layout_path = format!("{}/data/track_layout.toml", env!("CARGO_MANIFEST_DIR"));
+    if let Ok(layout) = crate::layout::TrackLayout::from_path(&layout_path) {
+        let valid_sensors = layout.sensor_ids();
+        body.validate_against_layout(&valid_sensors)?;
+    }
+
     body.save(&state::trains_path())?;
     Ok(json!({
         "status": "ok",
@@ -544,6 +552,7 @@ async fn initialise_handler(
             let code = match &e {
                 StateError::TooManyTrains(_)
                 | StateError::InvalidSensor(_)
+                | StateError::SensorNotInLayout(_, _)
                 | StateError::InvalidTrainId(_)
                 | StateError::DuplicateTrainId(_) => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
